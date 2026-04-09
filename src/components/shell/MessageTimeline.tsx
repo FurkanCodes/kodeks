@@ -5,6 +5,7 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
 } from 'react'
@@ -90,6 +91,7 @@ type MessageTimelineProps = {
   liveStatus?: LiveStatusView | null
   suggestions?: QuickStartSuggestion[]
   composerEngaged?: boolean
+  fillAvailableHeight?: boolean
   emptyState?: {
     eyebrow?: string
     title: string
@@ -1334,6 +1336,7 @@ function AnimatedSuggestionCard(props: {
 function EmptyState(props: {
   suggestions: QuickStartSuggestion[]
   composerEngaged?: boolean
+  fillAvailableHeight?: boolean
   emptyState?: MessageTimelineProps['emptyState']
   liveStatus?: LiveStatusView | null
   onSuggestionSelect?: (value: string) => void
@@ -1361,8 +1364,16 @@ function EmptyState(props: {
 
   return (
     <LazyMotion features={domAnimation}>
-      <div className="flex justify-center px-6 pb-6 pt-8">
-        <div className="grid min-h-[calc(100svh-13.5rem)] w-full max-w-[54rem] grid-rows-[1fr_auto]">
+      <div
+        className={`flex justify-center px-6 pb-6 pt-8 ${
+          props.fillAvailableHeight ? 'min-h-0 flex-1' : ''
+        }`}
+      >
+        <div
+          className={`grid w-full max-w-[54rem] grid-rows-[1fr_auto] ${
+            props.fillAvailableHeight ? 'min-h-0 flex-1' : 'min-h-[calc(100svh-13.5rem)]'
+          }`}
+        >
           <section className="flex w-full justify-center pb-10 text-center">
             <div className="flex flex-col items-center self-center">
               <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
@@ -1433,6 +1444,23 @@ function EmptyState(props: {
 export function MessageTimeline(props: MessageTimelineProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const lastMessage = props.messages[props.messages.length - 1]
+  const emptyStateAnchorKey = useMemo(
+    () =>
+      [
+        props.messages.length,
+        props.emptyState?.projectPath || '',
+        props.emptyState?.title || '',
+        props.liveStatus?.label || '',
+        (props.liveStatus?.detailLines || []).join('|'),
+      ].join(':'),
+    [
+      props.emptyState?.projectPath,
+      props.emptyState?.title,
+      props.liveStatus?.detailLines,
+      props.liveStatus?.label,
+      props.messages.length,
+    ],
+  )
 
   const anchorKey = useMemo(
     () =>
@@ -1464,11 +1492,25 @@ export function MessageTimeline(props: MessageTimelineProps) {
     })
   }, [props.focusedMessageId])
 
+  useLayoutEffect(() => {
+    if (props.messages.length > 0) {
+      return
+    }
+
+    const container = props.scrollContainerRef?.current
+    if (!container) {
+      return
+    }
+
+    container.scrollTop = 0
+  }, [emptyStateAnchorKey, props.messages.length, props.scrollContainerRef])
+
   if (props.messages.length === 0) {
     return (
       <EmptyState
         suggestions={props.suggestions ?? []}
         composerEngaged={props.composerEngaged}
+        fillAvailableHeight={props.fillAvailableHeight}
         emptyState={props.emptyState}
         liveStatus={props.liveStatus}
         onSuggestionSelect={props.onSuggestionSelect}
@@ -1477,7 +1519,11 @@ export function MessageTimeline(props: MessageTimelineProps) {
   }
 
   return (
-    <div className="relative mx-auto max-w-[50rem] space-y-4 px-3.5 py-3.5">
+    <div
+      className={`relative mx-auto max-w-[50rem] space-y-4 px-3.5 py-3.5 ${
+        props.fillAvailableHeight ? 'min-h-0 flex-1' : ''
+      }`}
+    >
       {props.messages.map((message) => (
         <MessageItem
           key={message.id}

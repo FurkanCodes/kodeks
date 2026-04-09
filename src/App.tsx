@@ -1278,55 +1278,58 @@ function App() {
           />
 
           <div ref={scrollContainerRef} className="flex-1 overflow-y-auto shell-scroll-none">
-            <div className="mx-auto flex w-full max-w-[74rem] flex-col px-4">
-              {pendingApprovals.length > 0 && effectivePanelMode !== 'approvals' ? (
-                <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-amber-400/10 bg-amber-500/5 px-4 py-3.5">
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-200/70">
-                      Approvals
+            <div className="mx-auto flex min-h-full w-full max-w-[74rem] flex-col px-4">
+              <div className="shrink-0">
+                {pendingApprovals.length > 0 && effectivePanelMode !== 'approvals' ? (
+                  <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-amber-400/10 bg-amber-500/5 px-4 py-3.5">
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-200/70">
+                        Approvals
+                      </div>
+                      <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">
+                        {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'approval' : 'approvals'} need review.
+                      </div>
                     </div>
-                    <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">
-                      {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'approval' : 'approvals'} need review.
+                    <NoticeButton
+                      onClick={() => {
+                        setDismissedApprovals(false)
+                        setPanelMode('approvals')
+                      }}
+                    >
+                      Review approvals
+                    </NoticeButton>
+                  </section>
+                ) : null}
+
+                {undoArchive ? (
+                  <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-white/5 bg-white/[0.03] px-4 py-3.5">
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">Archived</div>
+                      <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">{undoArchive.label} moved out of the main sidebar.</div>
                     </div>
-                  </div>
-                  <NoticeButton
-                    onClick={() => {
-                      setDismissedApprovals(false)
-                      setPanelMode('approvals')
-                    }}
-                  >
-                    Review approvals
-                  </NoticeButton>
-                </section>
-              ) : null}
+                    <NoticeButton onClick={() => void handleUnarchiveThread(undoArchive.id)}>Undo archive</NoticeButton>
+                  </section>
+                ) : null}
 
-              {undoArchive ? (
-                <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-white/5 bg-white/[0.03] px-4 py-3.5">
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">Archived</div>
-                    <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">{undoArchive.label} moved out of the main sidebar.</div>
-                  </div>
-                  <NoticeButton onClick={() => void handleUnarchiveThread(undoArchive.id)}>Undo archive</NoticeButton>
-                </section>
-              ) : null}
+                {noticeContent}
+              </div>
 
-              {noticeContent}
+              <MessageTimeline
+                messages={shellMessagesValue}
+                suggestions={PROMPT_SUGGESTIONS}
+                emptyState={activeProjectEmptyState}
+                composerEngaged={composerEngaged}
+                fillAvailableHeight
+                liveStatus={liveStatus}
+                focusedMessageId={focusedMessageId}
+                scrollContainerRef={scrollContainerRef}
+                onSuggestionSelect={(value) => void handleSend(value)}
+                onOpenFileReference={handleOpenCodePath}
+                onOpenChangeReference={handleOpenDiffPath}
+                onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
+                resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
+              />
             </div>
-
-            <MessageTimeline
-              messages={shellMessagesValue}
-              suggestions={PROMPT_SUGGESTIONS}
-              emptyState={activeProjectEmptyState}
-              composerEngaged={composerEngaged}
-              liveStatus={liveStatus}
-              focusedMessageId={focusedMessageId}
-              scrollContainerRef={scrollContainerRef}
-              onSuggestionSelect={(value) => void handleSend(value)}
-              onOpenFileReference={handleOpenCodePath}
-              onOpenChangeReference={handleOpenDiffPath}
-              onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
-              resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
-            />
           </div>
 
           <ComposerDock
