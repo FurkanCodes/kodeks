@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ModelOption } from '../../lib/kodeks'
 import { extractReferenceQuery, resolveWorkspaceReference } from '../../lib/shellState'
 import {
@@ -125,7 +125,7 @@ export function ComposerDock(props: ComposerDockProps) {
     setDraftPrompt('')
   }, [props.clearToken])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     props.onComposingChange(isComposing)
   }, [isComposing, props.onComposingChange])
 

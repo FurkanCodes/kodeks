@@ -1067,11 +1067,13 @@ function EmptyState(props: {
   liveStatus?: LiveStatusView | null
   onSuggestionSelect?: (value: string) => void
 }) {
-  const suggestionsHidden = props.composerEngaged
   const projectTail = props.emptyState?.projectPath ? tailPath(props.emptyState.projectPath) : null
+  const displayedSuggestions = props.suggestions.slice(0, 3)
+  const projectLabel = props.emptyState?.projectLabel || projectTail || 'This repo'
   const showProjectTail =
     projectTail &&
     (!props.emptyState?.projectLabel || projectTail.toLowerCase() !== props.emptyState.projectLabel.toLowerCase())
+  const suggestionsVisible = !props.composerEngaged
 
   function renderSuggestionIcon(kind: QuickStartSuggestion['kind']) {
     switch (kind) {
@@ -1087,113 +1089,76 @@ function EmptyState(props: {
   }
 
   return (
-    <div className="flex h-full items-center justify-center px-6 pb-12 pt-10">
-      <div className="w-full max-w-[54rem]">
-        <div className="grid gap-10 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:items-start">
-          <section className="flex flex-col items-center text-center lg:items-start lg:text-left">
-            <div className="shell-fade-rise inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
-              <FolderOpenIcon className="h-3.5 w-3.5 text-neutral-300" />
-              <span>{props.emptyState?.eyebrow || 'Project'}</span>
-              {props.emptyState?.projectLabel ? (
-                <>
-                  <span className="h-1 w-1 rounded-full bg-white/18" />
-                  <span className="max-w-[14rem] truncate normal-case tracking-[-0.01em] text-neutral-200">
-                    {props.emptyState.projectLabel}
-                  </span>
-                </>
-              ) : null}
-            </div>
-
-            {showProjectTail ? (
-              <div
-                className="shell-fade-rise mt-3 max-w-[20rem] truncate text-[12px] tracking-[-0.012em] text-neutral-600"
-                style={{ animationDelay: '40ms' }}
-              >
-                {projectTail}
-              </div>
+    <div className="flex justify-center px-6 pb-6 pt-8">
+      <div className="grid min-h-[calc(100svh-13.5rem)] w-full max-w-[54rem] grid-rows-[1fr_auto]">
+        <section className="flex w-full flex-col items-center justify-center pb-10 text-center">
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
+            <FolderOpenIcon className="h-3.5 w-3.5 text-neutral-300" />
+            <span>{props.emptyState?.eyebrow || 'Project'}</span>
+            {projectLabel ? (
+              <>
+                <span className="h-1 w-1 rounded-full bg-white/18" />
+                <span className="max-w-[14rem] truncate normal-case tracking-[-0.01em] text-neutral-200">
+                  {projectLabel}
+                </span>
+              </>
             ) : null}
+          </div>
 
-            <h1
-              className="shell-fade-rise mt-5 max-w-[12ch] text-[length:var(--text-display)] font-medium leading-[0.92] tracking-[-0.05em] text-white"
-              style={{ animationDelay: '80ms' }}
-            >
-              {props.emptyState?.title || 'What are we building today?'}
+          {showProjectTail ? (
+            <div className="mt-3 max-w-[22rem] truncate text-[12px] tracking-[-0.012em] text-neutral-600">
+              {projectTail}
+            </div>
+          ) : null}
+
+          <div className="mt-6 max-w-[30rem]">
+            <h1 className="text-[3rem] font-medium leading-[0.92] tracking-[-0.055em] text-white">
+              {props.emptyState?.title || 'Start a new thread'}
             </h1>
-
             {props.emptyState?.description ? (
-              <p
-                className="shell-fade-rise mt-4 max-w-[26rem] text-[15px] leading-[1.68] tracking-[-0.015em] text-neutral-400"
-                style={{ animationDelay: '120ms' }}
-              >
+              <p className="mt-4 text-[13px] leading-[1.65] tracking-[-0.015em] text-neutral-500">
                 {props.emptyState.description}
               </p>
             ) : null}
+          </div>
 
-            {props.liveStatus ? (
-              <div
-                className="shell-fade-rise mt-7 w-full max-w-[24rem] rounded-[16px] border border-white/6 bg-white/[0.025] px-4 py-3.5"
-                style={{ animationDelay: '160ms' }}
-              >
-                <LiveStatusRow status={props.liveStatus} />
-              </div>
-            ) : null}
-          </section>
-
-          {props.suggestions.length > 0 ? (
-            <section
-              aria-hidden={suggestionsHidden}
-              className={`grid overflow-hidden transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
-                suggestionsHidden ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'
-              }`}
-            >
-              <div className="overflow-hidden">
-                <div
-                  className={`transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
-                    suggestionsHidden ? 'translate-y-3 opacity-0' : 'translate-y-0 opacity-100'
-                  }`}
-                >
-                  <div className="mb-4 flex flex-col items-center text-center lg:items-start lg:text-left">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-600">
-                      Quick starts
-                    </div>
-                    <div className="mt-1 text-[13px] leading-[1.5] tracking-[-0.01em] text-neutral-500">
-                      Pick a concrete first move. Your first prompt opens the thread.
-                    </div>
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {props.suggestions.map((suggestion, index) => (
-                      <button
-                        type="button"
-                        disabled={suggestionsHidden}
-                        key={suggestion.prompt}
-                        onClick={() => props.onSuggestionSelect?.(suggestion.prompt)}
-                        className="group shell-fade-rise relative flex min-h-[148px] flex-col rounded-[18px] border border-white/7 bg-white/[0.025] p-4 text-left transition-[border-color,background-color,transform] duration-200 hover:-translate-y-0.5 hover:border-white/14 hover:bg-white/[0.04] disabled:pointer-events-none"
-                        style={{ animationDelay: `${180 + index * 45}ms` }}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex h-9 w-9 items-center justify-center rounded-[12px] border border-white/8 bg-white/[0.04]">
-                            {renderSuggestionIcon(suggestion.kind)}
-                          </div>
-                          <ChevronIcon className="mt-1 h-3.5 w-3.5 shrink-0 text-neutral-700 transition-all group-hover:translate-x-0.5 group-hover:text-neutral-300" />
-                        </div>
-
-                        <div className="mt-7">
-                          <div className="text-[15px] font-medium leading-[1.35] tracking-[-0.018em] text-neutral-100">
-                            {suggestion.title}
-                          </div>
-                          <p className="mt-2 max-w-[24ch] text-[13px] leading-[1.55] tracking-[-0.012em] text-neutral-500 transition-colors group-hover:text-neutral-400">
-                            {suggestion.detail}
-                          </p>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </section>
+          {props.liveStatus ? (
+            <div className="mt-7 w-full max-w-[24rem] rounded-[16px] border border-white/6 bg-white/[0.025] px-4 py-3.5">
+              <LiveStatusRow status={props.liveStatus} />
+            </div>
           ) : null}
-        </div>
+        </section>
+
+        {displayedSuggestions.length > 0 && suggestionsVisible ? (
+          <section className="mx-auto w-full max-w-[46rem] pb-2">
+            <div className="grid gap-3 md:grid-cols-3">
+              {displayedSuggestions.map((suggestion) => (
+                <button
+                  type="button"
+                  key={suggestion.prompt}
+                  onClick={() => props.onSuggestionSelect?.(suggestion.prompt)}
+                  className="group relative flex min-h-[116px] flex-col overflow-hidden rounded-[22px] border border-white/7 bg-white/[0.04] px-4 py-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-[border-color,background-color,box-shadow] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] hover:border-white/12 hover:bg-white/[0.055] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_12px_28px_rgba(0,0,0,0.18)]"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-[12px] border border-white/9 bg-white/[0.05] text-neutral-100 transition-[transform,border-color,background-color] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] group-hover:-translate-y-0.5 group-hover:border-white/14 group-hover:bg-white/[0.075]">
+                      {renderSuggestionIcon(suggestion.kind)}
+                    </div>
+                    <ChevronIcon className="mt-1 h-3.5 w-3.5 shrink-0 text-neutral-700 transition-[transform,color] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] group-hover:translate-x-0.5 group-hover:text-neutral-300" />
+                  </div>
+
+                  <div className="mt-6">
+                    <div className="text-[14px] font-medium leading-[1.35] tracking-[-0.018em] text-neutral-100">
+                      {suggestion.title}
+                    </div>
+                    <p className="mt-2 max-w-[24ch] text-[12.5px] leading-[1.55] tracking-[-0.012em] text-neutral-500 transition-colors duration-300 group-hover:text-neutral-400">
+                      {suggestion.detail}
+                    </p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </div>
     </div>
   )
