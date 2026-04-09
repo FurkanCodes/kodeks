@@ -3182,7 +3182,9 @@ mod tests {
 
     #[test]
     fn turn_payload_builders_match_expected_shapes() {
-        let input = build_turn_input("hello");
+        let attachments: Vec<crate::UserInputItem> = Vec::new();
+
+        let input = build_turn_input("hello", &attachments);
         assert_eq!(input[0]["type"], "text");
         assert_eq!(input[0]["text"], "hello");
 
@@ -3202,13 +3204,13 @@ mod tests {
         assert_eq!(resumed["approvalPolicy"], "never");
         assert_eq!(resumed["sandbox"], "danger-full-access");
 
-        let start = build_turn_start_payload("thread-1", "hello", &config);
+        let start = build_turn_start_payload("thread-1", "hello", &attachments, &config);
         assert_eq!(start["threadId"], "thread-1");
         assert_eq!(start["input"][0]["text"], "hello");
         assert_eq!(start["model"], "gpt-5");
         assert_eq!(start["effort"], "high");
 
-        let steer = build_turn_steer_payload("thread-1", "turn-9", "adjust", &config);
+        let steer = build_turn_steer_payload("thread-1", "turn-9", "adjust", &attachments, &config);
         assert_eq!(steer["threadId"], "thread-1");
         assert_eq!(steer["turnId"], "turn-9");
         assert_eq!(steer["input"][0]["text"], "adjust");
