@@ -55,6 +55,7 @@ import {
   removeProjectGrouping,
   renameProject,
   saveWorkspaceStore,
+  setSidebarCollapsed,
   setThreadPreference,
   upsertProject,
   type WorkspaceStore,
@@ -186,12 +187,25 @@ type ComposerImageAttachment = {
 
 type PermissionPreset = 'default' | 'full-access'
 
+type ShellNavigationEntry =
+  | { kind: 'project'; rootPath: string }
+  | { kind: 'thread'; threadId: string }
+
+type ShellHistoryState = {
+  entries: ShellNavigationEntry[]
+  index: number
+}
+
 function App() {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const composerAttachmentsRef = useRef<ComposerImageAttachment[]>([])
 
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY_SNAPSHOT)
   const [workspaceStore, setWorkspaceStore] = useState<WorkspaceStore>(() => loadWorkspaceStore())
+  const [shellHistory, setShellHistory] = useState<ShellHistoryState>({
+    entries: [],
+    index: -1,
+  })
   const [models, setModels] = useState<ModelOption[]>([])
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
@@ -821,7 +835,31 @@ function App() {
     }
   }
 
-  function openProjectView(rootPath: string) {
+  function recordShellNavigation(entry: ShellNavigationEntry) {
+    setShellHistory((current) => {
+      const visibleEntries = current.entries.slice(0, current.index + 1)
+      const previous = visibleEntries[visibleEntries.length - 1]
+      if (previous && shellNavigationEquals(previous, entry)) {
+        return {
+          entries: visibleEntries,
+          index: visibleEntries.length - 1,
+        }
+      }
+
+      return {
+        entries: [...visibleEntries, entry],
+        index: visibleEntries.length,
+      }
+    })
+  }
+
+  function openProjectView(
+    rootPath: string,
+    options?: {
+      pushHistory?: boolean
+      historyIndex?: number
+    },
+  ) {
     setPanelMode(null)
     setFocusedMessageId(null)
     setError(null)
@@ -830,6 +868,12 @@ function App() {
     setSelectedDiffPath(null)
     setActiveProjectViewRoot(rootPath)
     setWorkspaceStore((current) => upsertProject(current, rootPath))
+
+    if (options?.pushHistory !== false) {
+      recordShellNavigation({ kind: 'project', rootPath })
+    } else if (typeof options?.historyIndex === 'number') {
+      setShellHistory((current) => ({ ...current, index: options.historyIndex! }))
+    }
   }
 
   async function handleAddProject() {
@@ -854,18 +898,35 @@ function App() {
     openProjectView(rootPath)
   }
 
-  async function handleThreadSelect(threadId: string) {
+  async function openThreadView(
+    threadId: string,
+    options?: {
+      config?: ThreadConfigOverride
+      pushHistory?: boolean
+      historyIndex?: number
+    },
+  ) {
     setBusy(true)
     setError(null)
     setFocusedMessageId(null)
     try {
-      setSnapshot(await selectThread(threadId))
+      setSnapshot(await selectThread(threadId, options?.config))
       setActiveProjectViewRoot(null)
+
+      if (options?.pushHistory !== false) {
+        recordShellNavigation({ kind: 'thread', threadId })
+      } else if (typeof options?.historyIndex === 'number') {
+        setShellHistory((current) => ({ ...current, index: options.historyIndex! }))
+      }
     } catch (nextError) {
       setError(stringifyError(nextError))
     } finally {
       setBusy(false)
     }
+  }
+
+  async function handleThreadSelect(threadId: string) {
+    await openThreadView(threadId)
   }
 
   async function handleSend(content: string) {
@@ -911,6 +972,7 @@ function App() {
       setSnapshot(nextSnapshot)
 
       if (preferenceThreadId) {
+        recordShellNavigation({ kind: 'thread', threadId: preferenceThreadId })
         updateThreadPreference(preferenceThreadId, {
           model: composerModel,
           reasoningEffort: composerReasoning,
@@ -1230,183 +1292,241 @@ function App() {
     setSettingsOpen(true)
   }
 
+  function findShellHistoryIndex(direction: -1 | 1) {
+    let cursor = shellHistory.index + direction
+
+    while (cursor >= 0 && cursor < shellHistory.entries.length) {
+      const candidate = shellHistory.entries[cursor]
+      if (candidate.kind === 'project' || snapshot.threads.some((thread) => thread.id === candidate.threadId)) {
+        return cursor
+      }
+      cursor += direction
+    }
+
+    return -1
+  }
+
+  const backHistoryIndex = findShellHistoryIndex(-1)
+  const forwardHistoryIndex = findShellHistoryIndex(1)
+  const canGoBack = backHistoryIndex !== -1
+  const canGoForward = forwardHistoryIndex !== -1
+  const sidebarCollapsed = workspaceStore.ui.sidebarCollapsed
+  const isMacOs =
+    snapshot.connection.platform_os === 'macos' ||
+    (typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform))
+
+  function handleToggleSidebar() {
+    setAccountMenuOpen(false)
+    setWorkspaceStore((current) => setSidebarCollapsed(current, !current.ui.sidebarCollapsed))
+  }
+
+  async function handleHistoryNavigation(direction: -1 | 1) {
+    const targetIndex = direction === -1 ? backHistoryIndex : forwardHistoryIndex
+    if (targetIndex === -1) {
+      return
+    }
+
+    const targetEntry = shellHistory.entries[targetIndex]
+    if (targetEntry.kind === 'project') {
+      openProjectView(targetEntry.rootPath, { pushHistory: false, historyIndex: targetIndex })
+      return
+    }
+
+    await openThreadView(targetEntry.threadId, {
+      pushHistory: false,
+      historyIndex: targetIndex,
+    })
+  }
+
   const title = activeProjectViewRoot
     ? activeProjectLabel
     : activeThread?.name || activeThread?.preview || activeProjectLabel || 'Untitled thread'
 
   return (
-    <div className="flex h-[100svh] w-full overflow-hidden bg-[#09090b] font-sans text-neutral-200">
-      <Sidebar
-        groups={sidebarGroups}
-        archivedThreads={archivedThreads}
-        accountMenuOpen={accountMenuOpen}
-        accountLabel={snapshot.account.identity || 'workspace@agent.app'}
-        planLabel={humanizePlan(snapshot.account.plan)}
-        onAddProject={() => void handleAddProject()}
-        onNewThread={(rootPath) => void handleNewThread(rootPath)}
-        onSelectProject={handleProjectSelect}
-        onSelectThread={(threadId) => void handleThreadSelect(threadId)}
-        onArchiveThread={(threadId) => void handleArchiveThread(threadId)}
-        onUnarchiveThread={(threadId) => void handleUnarchiveThread(threadId)}
-        onRenameProject={handleRenameProject}
-        onRemoveProject={handleRemoveProject}
-        onToggleGroup={handleToggleGroup}
-        onToggleAccountMenu={() => setAccountMenuOpen((value) => !value)}
-        onOpenSettings={() => {
-          setAccountMenuOpen(false)
-          setSettingsOpen(true)
-        }}
-        onSignOut={() => void handleLogout()}
-        signOutDisabled={busy}
-      />
+    <>
+      <div className="flex h-[100svh] w-full flex-col overflow-hidden bg-[#09090b] font-sans text-neutral-200">
+        <TopBar
+          title={title}
+          isMacOs={isMacOs}
+          sidebarCollapsed={sidebarCollapsed}
+          canGoBack={canGoBack}
+          canGoForward={canGoForward}
+          runState={runState}
+          changesCount={changesCount}
+          changesDisabled={changesCount === 0}
+          changesOpen={effectivePanelMode === 'changes'}
+          codeReady={codeReady}
+          codeOpen={effectivePanelMode === 'code'}
+          diagnosticsCount={diagnosticsCount}
+          diagnosticsOpen={effectivePanelMode === 'diagnostics'}
+          onToggleSidebar={handleToggleSidebar}
+          onGoBack={() => void handleHistoryNavigation(-1)}
+          onGoForward={() => void handleHistoryNavigation(1)}
+          onToggleChanges={handleToggleChanges}
+          onToggleCode={handleToggleCode}
+          onToggleDiagnostics={handleToggleDiagnostics}
+        />
 
-      <div className="relative flex min-w-0 flex-1 overflow-hidden">
-        <div className="flex min-w-0 flex-1 flex-col bg-[#09090b]">
-          <TopBar
-            title={title}
-            runState={runState}
-            changesCount={changesCount}
-            changesDisabled={changesCount === 0}
-            changesOpen={effectivePanelMode === 'changes'}
-            codeReady={codeReady}
-            codeOpen={effectivePanelMode === 'code'}
-            diagnosticsCount={diagnosticsCount}
-            diagnosticsOpen={effectivePanelMode === 'diagnostics'}
-            onToggleChanges={handleToggleChanges}
-            onToggleCode={handleToggleCode}
-            onToggleDiagnostics={handleToggleDiagnostics}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <Sidebar
+            collapsed={sidebarCollapsed}
+            groups={sidebarGroups}
+            archivedThreads={archivedThreads}
+            accountMenuOpen={accountMenuOpen}
+            accountLabel={snapshot.account.identity || 'workspace@agent.app'}
+            planLabel={humanizePlan(snapshot.account.plan)}
+            onAddProject={() => void handleAddProject()}
+            onNewThread={(rootPath) => void handleNewThread(rootPath)}
+            onSelectProject={handleProjectSelect}
+            onSelectThread={(threadId) => void handleThreadSelect(threadId)}
+            onArchiveThread={(threadId) => void handleArchiveThread(threadId)}
+            onUnarchiveThread={(threadId) => void handleUnarchiveThread(threadId)}
+            onRenameProject={handleRenameProject}
+            onRemoveProject={handleRemoveProject}
+            onToggleGroup={handleToggleGroup}
+            onToggleAccountMenu={() => setAccountMenuOpen((value) => !value)}
+            onOpenSettings={() => {
+              setAccountMenuOpen(false)
+              setSettingsOpen(true)
+            }}
+            onSignOut={() => void handleLogout()}
+            signOutDisabled={busy}
           />
 
-          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto shell-scroll-none">
-            <div className="mx-auto flex min-h-full w-full max-w-[74rem] flex-col px-4">
-              <div className="shrink-0">
-                {pendingApprovals.length > 0 && effectivePanelMode !== 'approvals' ? (
-                  <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-amber-400/10 bg-amber-500/5 px-4 py-3.5">
-                    <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-200/70">
-                        Approvals
-                      </div>
-                      <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">
-                        {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'approval' : 'approvals'} need review.
-                      </div>
-                    </div>
-                    <NoticeButton
-                      onClick={() => {
-                        setDismissedApprovals(false)
-                        setPanelMode('approvals')
-                      }}
-                    >
-                      Review approvals
-                    </NoticeButton>
-                  </section>
-                ) : null}
+          <div className="relative flex min-w-0 flex-1 overflow-hidden">
+            <div className="flex min-w-0 flex-1 flex-col bg-[#09090b]">
+              <div ref={scrollContainerRef} className="flex-1 overflow-y-auto shell-scroll-none">
+                <div className="mx-auto flex min-h-full w-full max-w-[74rem] flex-col px-4">
+                  <div className="shrink-0">
+                    {pendingApprovals.length > 0 && effectivePanelMode !== 'approvals' ? (
+                      <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-amber-400/10 bg-amber-500/5 px-4 py-3.5">
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-200/70">
+                            Approvals
+                          </div>
+                          <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">
+                            {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'approval' : 'approvals'} need review.
+                          </div>
+                        </div>
+                        <NoticeButton
+                          onClick={() => {
+                            setDismissedApprovals(false)
+                            setPanelMode('approvals')
+                          }}
+                        >
+                          Review approvals
+                        </NoticeButton>
+                      </section>
+                    ) : null}
 
-                {undoArchive ? (
-                  <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-white/5 bg-white/[0.03] px-4 py-3.5">
-                    <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">Archived</div>
-                      <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">{undoArchive.label} moved out of the main sidebar.</div>
-                    </div>
-                    <NoticeButton onClick={() => void handleUnarchiveThread(undoArchive.id)}>Undo archive</NoticeButton>
-                  </section>
-                ) : null}
+                    {undoArchive ? (
+                      <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-white/5 bg-white/[0.03] px-4 py-3.5">
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">Archived</div>
+                          <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">{undoArchive.label} moved out of the main sidebar.</div>
+                        </div>
+                        <NoticeButton onClick={() => void handleUnarchiveThread(undoArchive.id)}>Undo archive</NoticeButton>
+                      </section>
+                    ) : null}
 
-                {noticeContent}
+                    {noticeContent}
+                  </div>
+
+                  <MessageTimeline
+                    messages={shellMessagesValue}
+                    suggestions={PROMPT_SUGGESTIONS}
+                    emptyState={activeProjectEmptyState}
+                    composerEngaged={composerEngaged}
+                    fillAvailableHeight
+                    liveStatus={liveStatus}
+                    focusedMessageId={focusedMessageId}
+                    scrollContainerRef={scrollContainerRef}
+                    onSuggestionSelect={(value) => void handleSend(value)}
+                    onOpenFileReference={handleOpenCodePath}
+                    onOpenChangeReference={handleOpenDiffPath}
+                    onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
+                    resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
+                  />
+                </div>
               </div>
 
-              <MessageTimeline
-                messages={shellMessagesValue}
-                suggestions={PROMPT_SUGGESTIONS}
-                emptyState={activeProjectEmptyState}
-                composerEngaged={composerEngaged}
-                fillAvailableHeight
-                liveStatus={liveStatus}
-                focusedMessageId={focusedMessageId}
-                scrollContainerRef={scrollContainerRef}
-                onSuggestionSelect={(value) => void handleSend(value)}
-                onOpenFileReference={handleOpenCodePath}
-                onOpenChangeReference={handleOpenDiffPath}
-                onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
-                resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
+              <ComposerDock
+                attachments={composerAttachments}
+                clearToken={composerResetToken}
+                projectLabel={activeProjectLabel}
+                projectPath={currentProjectRoot}
+                models={availableModels}
+                selectedModel={composerModel}
+                selectedReasoning={composerReasoning}
+                reasoningOptions={reasoningOptions}
+                selectedPermissionPreset={selectedPermissionPreset}
+                permissionOptions={permissionOptions}
+                workspaceFiles={workspaceFiles}
+                liveTurn={Boolean(activeTurnId)}
+                authenticated={snapshot.account.status === 'authenticated'}
+                busy={busy}
+                compactModelMenu={compactModelMenu}
+                touchModelPreview={touchModelPreview}
+                onOpenProjectPicker={() => void handleAddProject()}
+                onPasteImages={(files) => void handlePasteComposerImages(files)}
+                onRemoveAttachment={handleRemoveComposerAttachment}
+                onComposingChange={setComposerEngaged}
+                onSubmit={(content) => void handleSend(content)}
+                onInterrupt={() => void handleInterruptTurn()}
+                onSelectModel={handleModelChange}
+                onSelectReasoning={handleReasoningChange}
+                onSelectPermissionPreset={(value) => void handlePermissionPresetChange(value)}
+                onOpenRateLimits={handleOpenRateLimits}
               />
             </div>
+
+            <InspectorPanel
+              open={effectivePanelMode !== null}
+              mode={effectivePanelMode ?? 'diagnostics'}
+              overlay={inspectorAsOverlay}
+              badgeLabel={buildBadgeLabel(
+                effectivePanelMode,
+                changesCount,
+                pendingApprovals.length,
+                diagnosticsCount,
+                selectedCodePath,
+              )}
+              diffFiles={visibleDiffFiles.map<DiffFileView>((file) => ({
+                path: file.path,
+                additions: file.additions,
+                deletions: file.deletions,
+                status: diffStatusToBadge(file.status),
+              }))}
+              hiddenDiffFilesCount={hiddenDiffFilesCount}
+              hiddenFilesVisible={showHiddenDiffFiles}
+              selectedPath={selectedDiffFile?.path ?? null}
+              selectedBreadcrumbs={selectedBreadcrumbs}
+              diffHeader={buildDiffHeader(selectedDiffFile)}
+              diffLines={selectedDiffLines}
+              codePath={selectedCodePath}
+              codeBreadcrumbs={codeBreadcrumbs}
+              codeContent={selectedCodeContent}
+              codeLanguage={languageForPath(selectedCodePath)}
+              approvals={pendingApprovals}
+              warnings={diagnosticsWarnings}
+              traces={diagnosticsTraces}
+              onClose={handleClosePanel}
+              onSelectFile={setSelectedDiffPath}
+              onToggleHiddenFiles={() => setShowHiddenDiffFiles((value) => !value)}
+              onJumpToContext={handleJumpToContext}
+              onViewCode={() => selectedDiffFile && handleOpenCodePath(selectedDiffFile.path)}
+              onShowChanges={() => {
+                if (selectedCodePath) {
+                  setSelectedDiffPath(selectedCodePath)
+                }
+                setPanelMode('changes')
+              }}
+              onOpenFile={() => void handleOpenExternalFile()}
+              onApprove={(approval, decision) => void handleApproval(approval, decision)}
+              onExportDiagnostics={handleExportDiagnostics}
+            />
           </div>
-
-          <ComposerDock
-            attachments={composerAttachments}
-            clearToken={composerResetToken}
-            projectLabel={activeProjectLabel}
-            projectPath={currentProjectRoot}
-            models={availableModels}
-            selectedModel={composerModel}
-            selectedReasoning={composerReasoning}
-            reasoningOptions={reasoningOptions}
-            selectedPermissionPreset={selectedPermissionPreset}
-            permissionOptions={permissionOptions}
-            workspaceFiles={workspaceFiles}
-            liveTurn={Boolean(activeTurnId)}
-            authenticated={snapshot.account.status === 'authenticated'}
-            busy={busy}
-            compactModelMenu={compactModelMenu}
-            touchModelPreview={touchModelPreview}
-            onOpenProjectPicker={() => void handleAddProject()}
-            onPasteImages={(files) => void handlePasteComposerImages(files)}
-            onRemoveAttachment={handleRemoveComposerAttachment}
-            onComposingChange={setComposerEngaged}
-            onSubmit={(content) => void handleSend(content)}
-            onInterrupt={() => void handleInterruptTurn()}
-            onSelectModel={handleModelChange}
-            onSelectReasoning={handleReasoningChange}
-            onSelectPermissionPreset={(value) => void handlePermissionPresetChange(value)}
-            onOpenRateLimits={handleOpenRateLimits}
-          />
         </div>
-
-        <InspectorPanel
-          open={effectivePanelMode !== null}
-          mode={effectivePanelMode ?? 'diagnostics'}
-          overlay={inspectorAsOverlay}
-          badgeLabel={buildBadgeLabel(
-            effectivePanelMode,
-            changesCount,
-            pendingApprovals.length,
-            diagnosticsCount,
-            selectedCodePath,
-          )}
-          diffFiles={visibleDiffFiles.map<DiffFileView>((file) => ({
-            path: file.path,
-            additions: file.additions,
-            deletions: file.deletions,
-            status: diffStatusToBadge(file.status),
-          }))}
-          hiddenDiffFilesCount={hiddenDiffFilesCount}
-          hiddenFilesVisible={showHiddenDiffFiles}
-          selectedPath={selectedDiffFile?.path ?? null}
-          selectedBreadcrumbs={selectedBreadcrumbs}
-          diffHeader={buildDiffHeader(selectedDiffFile)}
-          diffLines={selectedDiffLines}
-          codePath={selectedCodePath}
-          codeBreadcrumbs={codeBreadcrumbs}
-          codeContent={selectedCodeContent}
-          codeLanguage={languageForPath(selectedCodePath)}
-          approvals={pendingApprovals}
-          warnings={diagnosticsWarnings}
-          traces={diagnosticsTraces}
-          onClose={handleClosePanel}
-          onSelectFile={setSelectedDiffPath}
-          onToggleHiddenFiles={() => setShowHiddenDiffFiles((value) => !value)}
-          onJumpToContext={handleJumpToContext}
-          onViewCode={() => selectedDiffFile && handleOpenCodePath(selectedDiffFile.path)}
-          onShowChanges={() => {
-            if (selectedCodePath) {
-              setSelectedDiffPath(selectedCodePath)
-            }
-            setPanelMode('changes')
-          }}
-          onOpenFile={() => void handleOpenExternalFile()}
-          onApprove={(approval, decision) => void handleApproval(approval, decision)}
-          onExportDiagnostics={handleExportDiagnostics}
-        />
       </div>
 
       <SettingsModal
@@ -1418,7 +1538,7 @@ function App() {
         onSearchChange={setSettingsSearch}
         onSectionChange={setActiveSettingsSection}
       />
-    </div>
+    </>
   )
 
   function handleExportDiagnostics() {
@@ -2391,6 +2511,22 @@ function permissionPresetFromSession(
   }
 
   return 'default'
+}
+
+function shellNavigationEquals(left: ShellNavigationEntry, right: ShellNavigationEntry) {
+  if (left.kind !== right.kind) {
+    return false
+  }
+
+  if (left.kind === 'project' && right.kind === 'project') {
+    return left.rootPath === right.rootPath
+  }
+
+  if (left.kind === 'thread' && right.kind === 'thread') {
+    return left.threadId === right.threadId
+  }
+
+  return false
 }
 
 function threadConfigPermissionsForPreset(preset: PermissionPreset) {

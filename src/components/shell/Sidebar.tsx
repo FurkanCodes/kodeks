@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import type { SidebarGroup, SidebarThread } from '../../lib/shellState'
 import {
   ArchiveIcon,
@@ -15,6 +15,7 @@ import {
 export type { SidebarGroup, SidebarThread } from '../../lib/shellState'
 
 type SidebarProps = {
+  collapsed: boolean
   groups: SidebarGroup[]
   archivedThreads: SidebarThread[]
   accountMenuOpen: boolean
@@ -61,6 +62,31 @@ function SidebarActionButton(props: {
   )
 }
 
+function RailIconButton(props: {
+  label: string
+  active?: boolean
+  icon: typeof SettingsIcon
+  onClick?: () => void
+}) {
+  const Icon = props.icon
+
+  return (
+    <button
+      type="button"
+      title={props.label}
+      onClick={props.onClick}
+      className={`relative flex size-11 items-center justify-center rounded-[13px] transition ${
+        props.active
+          ? 'bg-white/[0.08] text-neutral-100'
+          : 'text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200'
+      }`}
+    >
+      {props.active ? <span className="absolute left-0 top-1/2 h-5 w-px -translate-y-1/2 bg-white/70" /> : null}
+      <Icon className="h-4 w-4" />
+    </button>
+  )
+}
+
 function FlyoutButton(props: {
   label: string
   icon: typeof SettingsIcon
@@ -92,6 +118,7 @@ function FlyoutButton(props: {
 }
 
 function AccountFlyout(props: {
+  collapsed: boolean
   accountLabel: string
   planLabel: string
   onOpenSettings: () => void
@@ -99,15 +126,19 @@ function AccountFlyout(props: {
   signOutDisabled: boolean
 }) {
   return (
-    <div className="absolute bottom-full left-2.5 z-50 mb-2 w-[206px] rounded-[13px] border border-white/5 bg-[#18181b] py-1 shadow-2xl">
-        <div className="mb-1 border-b border-white/5 px-3 py-2">
-          <div className="truncate text-[13px] font-medium text-neutral-200">{props.accountLabel}</div>
-          <div className="text-[11.5px] text-neutral-500">{props.planLabel}</div>
+    <div
+      className={`absolute z-50 rounded-[13px] bg-[#18181b] py-1 shadow-[0_24px_80px_rgba(0,0,0,0.45)] ${
+        props.collapsed ? 'bottom-2 left-full ml-2 w-[206px]' : 'bottom-full left-2.5 mb-2 w-[206px]'
+      }`}
+    >
+      <div className="mb-1 px-3 py-2">
+        <div className="truncate text-[13px] font-medium text-neutral-200">{props.accountLabel}</div>
+        <div className="text-[11.5px] text-neutral-500">{props.planLabel}</div>
       </div>
 
       <FlyoutButton label="Settings" icon={SettingsIcon} onClick={props.onOpenSettings} />
 
-      <div className="mx-2 my-1.5 h-px bg-white/5" />
+      <div className="mx-3 my-1.5 h-px bg-white/[0.04]" />
 
       <FlyoutButton
         label="Sign Out"
@@ -122,7 +153,7 @@ function AccountFlyout(props: {
 
 function MenuSurface(props: { children: ReactNode }) {
   return (
-    <div className="absolute right-0 top-full z-40 mt-1 min-w-[164px] rounded-[11px] border border-white/5 bg-[#18181b] p-1 shadow-2xl">
+    <div className="absolute right-0 top-full z-40 mt-1 min-w-[164px] rounded-[11px] bg-[#18181b] p-1 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
       {props.children}
     </div>
   )
@@ -162,28 +193,69 @@ export function Sidebar(props: SidebarProps) {
     [props.archivedThreads.length],
   )
 
-  return (
-    <aside className="relative flex h-full w-[286px] shrink-0 flex-col border-r border-white/[0.04] bg-[#101012] font-sans">
-      <div className="flex h-[54px] shrink-0 items-center justify-between px-4">
-        <div className="flex items-center gap-2">
-          <div className="flex size-[18px] items-center justify-center rounded-[7px] bg-white shadow-[0_0_12px_rgba(255,255,255,0.15)]">
-          <span className="text-[10px] font-bold leading-none text-black">◆</span>
-        </div>
-          <span className="text-[15px] font-medium tracking-[-0.02em] text-neutral-200">Agent</span>
-        </div>
-        <div className="rounded border border-white/10 bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.12em] text-neutral-300">
-          BETA
-        </div>
-      </div>
+  const railGroups = useMemo(
+    () => props.groups.filter((group) => group.rootPath && group.key !== 'other'),
+    [props.groups],
+  )
 
-      <div className="space-y-1 px-3.5 pb-1 pt-2.5">
+  useEffect(() => {
+    if (!props.collapsed) {
+      return
+    }
+
+    setProjectMenuKey(null)
+    setThreadMenuId(null)
+    setArchivedExpanded(false)
+  }, [props.collapsed])
+
+  if (props.collapsed) {
+    return (
+      <aside className="relative flex h-full w-[72px] shrink-0 flex-col items-center bg-[#101012] py-3 transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+        <div className="flex flex-col items-center gap-2">
+          <div className="flex size-11 items-center justify-center rounded-[14px] bg-white/[0.035]">
+            <span className="text-[11px] font-bold leading-none text-white">◆</span>
+          </div>
+          <RailIconButton label="Add project" icon={PlusIcon} onClick={props.onAddProject} />
+        </div>
+
+        <div className="shell-scroll-none mt-4 flex flex-1 flex-col items-center gap-2 overflow-y-auto px-2">
+          {railGroups.map((group) => (
+            <RailIconButton
+              key={group.key}
+              label={group.label}
+              icon={FolderOpenIcon}
+              active={group.active}
+              onClick={() => group.rootPath && props.onSelectProject(group.rootPath)}
+            />
+          ))}
+        </div>
+
+        <div className="relative mt-3">
+          {props.accountMenuOpen ? (
+            <AccountFlyout
+              collapsed
+              accountLabel={props.accountLabel}
+              planLabel={props.planLabel}
+              onOpenSettings={props.onOpenSettings}
+              onSignOut={props.onSignOut}
+              signOutDisabled={props.signOutDisabled}
+            />
+          ) : null}
+
+          <RailIconButton label="Settings" icon={SettingsIcon} onClick={props.onToggleAccountMenu} />
+        </div>
+      </aside>
+    )
+  }
+
+  return (
+    <aside className="relative flex h-full w-[286px] shrink-0 flex-col bg-[#101012] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+      <div className="space-y-1 px-3.5 pb-1 pt-3">
         <SidebarActionButton label="Add project" icon={PlusIcon} onClick={props.onAddProject} />
       </div>
 
       <div className="px-3.5 pb-1.5 pt-3.5">
-        <span className="text-[11.5px] font-medium tracking-[0.08em] text-neutral-500">
-          Projects
-        </span>
+        <span className="text-[11.5px] font-medium tracking-[0.08em] text-neutral-500">Projects</span>
       </div>
 
       <div className="shell-scroll-none flex-1 overflow-y-auto px-2.5 pb-3.5">
@@ -327,7 +399,7 @@ export function Sidebar(props: SidebarProps) {
                         </div>
 
                         {thread.active ? (
-                        <div className="ml-1 text-[12px] font-medium text-neutral-500 group-hover:hidden">•</div>
+                          <div className="ml-1 text-[12px] font-medium text-neutral-500 group-hover:hidden">•</div>
                         ) : null}
                       </div>
 
@@ -392,6 +464,7 @@ export function Sidebar(props: SidebarProps) {
       <div className="relative p-3.5 pt-2.5">
         {props.accountMenuOpen ? (
           <AccountFlyout
+            collapsed={false}
             accountLabel={props.accountLabel}
             planLabel={props.planLabel}
             onOpenSettings={props.onOpenSettings}

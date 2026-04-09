@@ -75,7 +75,12 @@ export function buildSidebarGroups(
     const removed = savedProject?.removed
     const key = removed || !rootPath ? 'other' : rootPath
     const label = removed || !rootPath ? 'Other' : savedProject?.label || defaultProjectLabel(rootPath)
-    const bucket = ensureBucket(key, label, removed ? null : rootPath, rootPath === activeProjectRoot)
+    const bucket = ensureBucket(
+      key,
+      label,
+      removed ? null : rootPath,
+      rootPath === activeProjectRoot || thread.id === activeThreadId,
+    )
     bucket.threads.push({
       id: thread.id,
       label: thread.name || thread.preview || 'Untitled thread',

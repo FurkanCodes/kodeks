@@ -22,6 +22,9 @@ function makeStore(): WorkspaceStore {
     ],
     recentRoots: [],
     threadPreferences: {},
+    ui: {
+      sidebarCollapsed: false,
+    },
   }
 }
 

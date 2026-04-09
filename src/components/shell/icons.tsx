@@ -1,5 +1,7 @@
 import type { CSSProperties, ComponentType } from 'react'
 import {
+  ArrowLeft,
+  ArrowRight,
   ArrowUp,
   Archive,
   BookOpen,
@@ -30,6 +32,8 @@ import {
   Settings,
   Shield,
   ShieldAlert,
+  PanelLeftClose,
+  PanelLeftOpen,
   Sparkles,
   Terminal,
   Trash2,
@@ -113,6 +117,14 @@ export function PaperclipIcon(props: IconProps) {
 
 export function ArrowUpIcon(props: IconProps) {
   return renderIcon(ArrowUp, props)
+}
+
+export function ArrowLeftIcon(props: IconProps) {
+  return renderIcon(ArrowLeft, props, 1.45)
+}
+
+export function ArrowRightIcon(props: IconProps) {
+  return renderIcon(ArrowRight, props, 1.45)
 }
 
 export function SparkleIcon(props: IconProps) {
@@ -217,4 +229,12 @@ export function ShieldIcon(props: IconProps) {
 
 export function ShieldAlertIcon(props: IconProps) {
   return renderIcon(ShieldAlert, props, 1.25)
+}
+
+export function SidebarCollapseIcon(props: IconProps) {
+  return renderIcon(PanelLeftClose, props, 1.35)
+}
+
+export function SidebarExpandIcon(props: IconProps) {
+  return renderIcon(PanelLeftOpen, props, 1.35)
 }

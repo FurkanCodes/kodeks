@@ -37,6 +37,9 @@ function makeStore(): WorkspaceStore {
     ],
     recentRoots: ['/work/bravo', '/work/alpha'],
     threadPreferences: {},
+    ui: {
+      sidebarCollapsed: false,
+    },
   }
 }
 

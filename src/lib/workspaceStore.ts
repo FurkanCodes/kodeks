@@ -15,6 +15,11 @@ export type WorkspaceStore = {
   projects: SavedProject[]
   recentRoots: string[]
   threadPreferences: Record<string, ThreadPreference>
+  ui: WorkspaceUiState
+}
+
+export type WorkspaceUiState = {
+  sidebarCollapsed: boolean
 }
 
 const STORAGE_KEY = 'kodeks.workspace-store.v1'
@@ -23,6 +28,9 @@ const EMPTY_STORE: WorkspaceStore = {
   projects: [],
   recentRoots: [],
   threadPreferences: {},
+  ui: {
+    sidebarCollapsed: false,
+  },
 }
 
 export function loadWorkspaceStore(): WorkspaceStore {
@@ -44,6 +52,12 @@ export function loadWorkspaceStore(): WorkspaceStore {
         parsed.threadPreferences && typeof parsed.threadPreferences === 'object'
           ? parsed.threadPreferences as Record<string, ThreadPreference>
           : {},
+      ui:
+        parsed.ui && typeof parsed.ui === 'object'
+          ? {
+              sidebarCollapsed: Boolean((parsed.ui as Partial<WorkspaceUiState>).sidebarCollapsed),
+            }
+          : { ...EMPTY_STORE.ui },
     }
   } catch {
     return EMPTY_STORE
@@ -132,10 +146,17 @@ export function setThreadPreference(
   return next
 }
 
+export function setSidebarCollapsed(store: WorkspaceStore, collapsed: boolean) {
+  const next = cloneStore(store)
+  next.ui.sidebarCollapsed = collapsed
+  return next
+}
+
 function cloneStore(store: WorkspaceStore): WorkspaceStore {
   return {
     projects: store.projects.map((project) => ({ ...project })),
     recentRoots: [...store.recentRoots],
     threadPreferences: { ...store.threadPreferences },
+    ui: { ...store.ui },
   }
 }
