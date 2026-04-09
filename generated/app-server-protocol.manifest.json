@@ -1,0 +1,8 @@
+{
+  "codexCliVersion": "0.117.0",
+  "experimental": false,
+  "schemaDir": "generated/app-server-schema",
+  "tsDir": "generated/app-server-ts",
+  "schemaBundle": "generated/app-server-schema/codex_app_server_protocol.schemas.json",
+  "tsIndex": "generated/app-server-ts/index.ts"
+}

@@ -1,0 +1,109 @@
+[
+  {
+    "kind": "notification",
+    "method": "turn/started",
+    "params": {
+      "turn": {
+        "id": "turn-1"
+      }
+    }
+  },
+  {
+    "kind": "notification",
+    "method": "item/started",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "item": {
+        "id": "msg-1",
+        "type": "agentMessage",
+        "phase": "streaming",
+        "text": "Planning"
+      }
+    }
+  },
+  {
+    "kind": "notification",
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "thread-1",
+      "itemId": "msg-1",
+      "delta": " update"
+    }
+  },
+  {
+    "kind": "notification",
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "item": {
+        "id": "msg-1",
+        "type": "agentMessage",
+        "phase": "completed",
+        "text": "Planning update"
+      }
+    }
+  },
+  {
+    "kind": "notification",
+    "method": "item/started",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "item": {
+        "id": "cmd-1",
+        "type": "commandExecution",
+        "command": "rtk cargo test",
+        "cwd": "/repo",
+        "status": "inProgress"
+      }
+    }
+  },
+  {
+    "kind": "notification",
+    "method": "item/commandExecution/outputDelta",
+    "params": {
+      "threadId": "thread-1",
+      "itemId": "cmd-1",
+      "delta": "running tests\n"
+    }
+  },
+  {
+    "kind": "notification",
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "item": {
+        "id": "cmd-1",
+        "type": "commandExecution",
+        "command": "rtk cargo test",
+        "cwd": "/repo",
+        "status": "completed",
+        "exitCode": 0,
+        "durationMs": 1540,
+        "aggregatedOutput": "running tests\nall green"
+      }
+    }
+  },
+  {
+    "kind": "notification",
+    "method": "turn/diff/updated",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "diff": "diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n"
+    }
+  },
+  {
+    "kind": "notification",
+    "method": "turn/completed",
+    "params": {
+      "turn": {
+        "id": "turn-1",
+        "status": "completed"
+      }
+    }
+  }
+]

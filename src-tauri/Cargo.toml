@@ -1,0 +1,24 @@
+[package]
+name = "kodeks-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Kodeks desktop shell"
+rust-version = "1.77.2"
+
+[lib]
+name = "kodeks_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log = "0.4"
+tauri = { version = "2.10.3", features = [] }
+tauri-plugin-log = "2"
+kodeks-core = { path = "../crates/kodeks-core" }

@@ -1,0 +1,33 @@
+[
+  {
+    "kind": "serverRequest",
+    "id": "req-1",
+    "method": "item/permission/requestApproval",
+    "params": {
+      "threadId": "thread-1",
+      "kind": "filesystem",
+      "path": "/tmp/output.log",
+      "reason": "Write exported diagnostics"
+    }
+  },
+  {
+    "kind": "notification",
+    "method": "serverRequest/resolved",
+    "params": {
+      "requestId": "req-1"
+    }
+  },
+  {
+    "kind": "stderr",
+    "message": "2026-03-31T20:00:00Z WARN runtime degraded while reconnecting"
+  },
+  {
+    "kind": "notification",
+    "method": "turn/diff/updated",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-2",
+      "diff": "diff --git a/src/app.ts b/src/app.ts\n@@ -10,2 +10,3 @@\n-old line\n+new line\n+extra line\n"
+    }
+  }
+]
