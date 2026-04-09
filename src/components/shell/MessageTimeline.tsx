@@ -1,5 +1,13 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef } from 'react'
+import { LazyMotion, domAnimation, m, useReducedMotion, useSpring, type Variants } from 'motion/react'
+import {
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useMemo,
+  useRef,
+} from 'react'
 import {
   BranchIcon,
   ChevronIcon,
@@ -1060,6 +1068,269 @@ function LiveStatusRow(props: { status: LiveStatusView }) {
   )
 }
 
+const SUGGESTION_ENTRY_EASE = [0.16, 1, 0.3, 1] as const
+const SUGGESTION_TILT_SPRING = {
+  stiffness: 220,
+  damping: 26,
+  mass: 0.7,
+}
+
+const SUGGESTION_CARD_VARIANTS: Variants = {
+  hidden: {
+    opacity: 0,
+    y: 24,
+    scale: 0.985,
+  },
+  visible: (index = 0) => ({
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: {
+      delay: 0.06 + index * 0.08,
+      duration: 0.52,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  }),
+  hover: {
+    scale: 1.012,
+    transition: {
+      duration: 0.28,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+  tap: {
+    scale: 0.994,
+    transition: {
+      duration: 0.16,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+  exit: (index = 0) => ({
+    opacity: 0,
+    y: 18,
+    scale: 0.985,
+    transition: {
+      delay: (2 - index) * 0.035,
+      duration: 0.22,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  }),
+}
+
+const SUGGESTION_CARD_REDUCED_VARIANTS: Variants = {
+  hidden: {
+    opacity: 0,
+  },
+  visible: (index = 0) => ({
+    opacity: 1,
+    transition: {
+      delay: index * 0.03,
+      duration: 0.18,
+      ease: 'linear',
+    },
+  }),
+  exit: (index = 0) => ({
+    opacity: 0,
+    transition: {
+      delay: (2 - index) * 0.015,
+      duration: 0.12,
+      ease: 'linear',
+    },
+  }),
+}
+
+const SUGGESTION_ICON_VARIANTS: Variants = {
+  hidden: {
+    opacity: 0,
+    scale: 0.94,
+    y: 8,
+  },
+  visible: {
+    opacity: 1,
+    scale: 1,
+    y: 0,
+    transition: {
+      duration: 0.4,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+  hover: {
+    y: -2,
+    scale: 1.04,
+    transition: {
+      duration: 0.28,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+}
+
+const SUGGESTION_CHEVRON_VARIANTS: Variants = {
+  hidden: {
+    opacity: 0,
+    x: -6,
+  },
+  visible: {
+    opacity: 0.4,
+    x: 0,
+    transition: {
+      delay: 0.06,
+      duration: 0.38,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+  hover: {
+    opacity: 0.85,
+    x: 4,
+    transition: {
+      duration: 0.24,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+}
+
+const SUGGESTION_CONTENT_VARIANTS: Variants = {
+  hidden: {
+    opacity: 0,
+    y: 10,
+  },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      delay: 0.1,
+      duration: 0.42,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+  hover: {
+    y: -1,
+    transition: {
+      duration: 0.28,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+}
+
+const SUGGESTION_GLOW_VARIANTS: Variants = {
+  hidden: {
+    opacity: 0,
+  },
+  visible: {
+    opacity: 0.38,
+    transition: {
+      duration: 0.5,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+  hover: {
+    opacity: 0.58,
+    transition: {
+      duration: 0.3,
+      ease: SUGGESTION_ENTRY_EASE,
+    },
+  },
+}
+
+function AnimatedSuggestionCard(props: {
+  active: boolean
+  index: number
+  icon: ReactNode
+  suggestion: QuickStartSuggestion
+  onSelect?: (value: string) => void
+}) {
+  const prefersReducedMotion = useReducedMotion()
+  const rotateX = useSpring(0, SUGGESTION_TILT_SPRING)
+  const rotateY = useSpring(0, SUGGESTION_TILT_SPRING)
+  const glowX = useSpring(0, SUGGESTION_TILT_SPRING)
+  const glowY = useSpring(0, SUGGESTION_TILT_SPRING)
+
+  function resetTilt() {
+    rotateX.set(0)
+    rotateY.set(0)
+    glowX.set(0)
+    glowY.set(0)
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (prefersReducedMotion || event.pointerType !== 'mouse') {
+      return
+    }
+
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const offsetX = (event.clientX - bounds.left) / bounds.width - 0.5
+    const offsetY = (event.clientY - bounds.top) / bounds.height - 0.5
+
+    rotateX.set(-offsetY * 7)
+    rotateY.set(offsetX * 9)
+    glowX.set(offsetX * 16)
+    glowY.set(offsetY * 14)
+  }
+
+  useEffect(() => {
+    if (!props.active) {
+      resetTilt()
+    }
+  }, [props.active])
+
+  return (
+    <m.button
+      type="button"
+      custom={props.index}
+      initial="hidden"
+      animate={props.active ? 'visible' : 'exit'}
+      disabled={!props.active}
+      tabIndex={props.active ? 0 : -1}
+      whileHover={prefersReducedMotion || !props.active ? undefined : 'hover'}
+      whileTap={prefersReducedMotion || !props.active ? undefined : 'tap'}
+      variants={
+        prefersReducedMotion ? SUGGESTION_CARD_REDUCED_VARIANTS : SUGGESTION_CARD_VARIANTS
+      }
+      onClick={() => props.onSelect?.(props.suggestion.prompt)}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={resetTilt}
+      onPointerCancel={resetTilt}
+      className="group relative flex min-h-[116px] flex-col overflow-hidden rounded-[22px] border border-white/7 bg-white/[0.04] px-4 py-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-[border-color,background-color,box-shadow] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] hover:border-white/12 hover:bg-white/[0.055] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_12px_28px_rgba(0,0,0,0.18)]"
+      style={
+        prefersReducedMotion
+          ? undefined
+          : {
+              rotateX,
+              rotateY,
+              transformPerspective: 1400,
+              transformStyle: 'preserve-3d',
+            }
+      }
+    >
+      <m.span
+        aria-hidden
+        variants={SUGGESTION_GLOW_VARIANTS}
+        className="pointer-events-none absolute inset-[-32%] rounded-full bg-[radial-gradient(circle_at_center,rgba(135,166,242,0.12),rgba(135,166,242,0.04)_26%,transparent_64%)]"
+        style={prefersReducedMotion ? undefined : { x: glowX, y: glowY }}
+      />
+      <div className="relative flex items-start justify-between gap-3 [transform:translateZ(18px)]">
+        <m.div
+          variants={SUGGESTION_ICON_VARIANTS}
+          className="flex h-9 w-9 items-center justify-center rounded-[12px] border border-white/9 bg-white/[0.05] text-neutral-100 transition-[border-color,background-color] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] group-hover:border-white/14 group-hover:bg-white/[0.075]"
+        >
+          {props.icon}
+        </m.div>
+        <m.div variants={SUGGESTION_CHEVRON_VARIANTS} className="mt-1 shrink-0">
+          <ChevronIcon className="h-3.5 w-3.5 text-neutral-500" />
+        </m.div>
+      </div>
+
+      <m.div variants={SUGGESTION_CONTENT_VARIANTS} className="relative mt-6 [transform:translateZ(28px)]">
+        <div className="text-[14px] font-medium leading-[1.35] tracking-[-0.018em] text-neutral-100">
+          {props.suggestion.title}
+        </div>
+        <p className="mt-2 max-w-[24ch] text-[12.5px] leading-[1.55] tracking-[-0.012em] text-neutral-500 transition-colors duration-300 group-hover:text-neutral-400">
+          {props.suggestion.detail}
+        </p>
+      </m.div>
+    </m.button>
+  )
+}
+
 function EmptyState(props: {
   suggestions: QuickStartSuggestion[]
   composerEngaged?: boolean
@@ -1089,78 +1360,73 @@ function EmptyState(props: {
   }
 
   return (
-    <div className="flex justify-center px-6 pb-6 pt-8">
-      <div className="grid min-h-[calc(100svh-13.5rem)] w-full max-w-[54rem] grid-rows-[1fr_auto]">
-        <section className="flex w-full flex-col items-center justify-center pb-10 text-center">
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
-            <FolderOpenIcon className="h-3.5 w-3.5 text-neutral-300" />
-            <span>{props.emptyState?.eyebrow || 'Project'}</span>
-            {projectLabel ? (
-              <>
-                <span className="h-1 w-1 rounded-full bg-white/18" />
-                <span className="max-w-[14rem] truncate normal-case tracking-[-0.01em] text-neutral-200">
-                  {projectLabel}
-                </span>
-              </>
-            ) : null}
-          </div>
+    <LazyMotion features={domAnimation}>
+      <div className="flex justify-center px-6 pb-6 pt-8">
+        <div className="grid min-h-[calc(100svh-13.5rem)] w-full max-w-[54rem] grid-rows-[1fr_auto]">
+          <section className="flex w-full justify-center pb-10 text-center">
+            <div className="flex flex-col items-center self-center">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
+                <FolderOpenIcon className="h-3.5 w-3.5 text-neutral-300" />
+                <span>{props.emptyState?.eyebrow || 'Project'}</span>
+                {projectLabel ? (
+                  <>
+                    <span className="h-1 w-1 rounded-full bg-white/18" />
+                    <span className="max-w-[14rem] truncate normal-case tracking-[-0.01em] text-neutral-200">
+                      {projectLabel}
+                    </span>
+                  </>
+                ) : null}
+              </div>
 
-          {showProjectTail ? (
-            <div className="mt-3 max-w-[22rem] truncate text-[12px] tracking-[-0.012em] text-neutral-600">
-              {projectTail}
-            </div>
-          ) : null}
+              {showProjectTail ? (
+                <div className="mt-3 max-w-[22rem] truncate text-[12px] tracking-[-0.012em] text-neutral-600">
+                  {projectTail}
+                </div>
+              ) : null}
 
-          <div className="mt-6 max-w-[30rem]">
-            <h1 className="text-[3rem] font-medium leading-[0.92] tracking-[-0.055em] text-white">
-              {props.emptyState?.title || 'Start a new thread'}
-            </h1>
-            {props.emptyState?.description ? (
-              <p className="mt-4 text-[13px] leading-[1.65] tracking-[-0.015em] text-neutral-500">
-                {props.emptyState.description}
-              </p>
-            ) : null}
-          </div>
+              <div className="mt-6 max-w-[30rem]">
+                <h1 className="text-[3rem] font-medium leading-[0.92] tracking-[-0.055em] text-white">
+                  {props.emptyState?.title || 'Start a new thread'}
+                </h1>
+                {props.emptyState?.description ? (
+                  <p className="mt-4 text-[13px] leading-[1.65] tracking-[-0.015em] text-neutral-500">
+                    {props.emptyState.description}
+                  </p>
+                ) : null}
+              </div>
 
-          {props.liveStatus ? (
-            <div className="mt-7 w-full max-w-[24rem] rounded-[16px] border border-white/6 bg-white/[0.025] px-4 py-3.5">
-              <LiveStatusRow status={props.liveStatus} />
-            </div>
-          ) : null}
-        </section>
-
-        {displayedSuggestions.length > 0 && suggestionsVisible ? (
-          <section className="mx-auto w-full max-w-[46rem] pb-2">
-            <div className="grid gap-3 md:grid-cols-3">
-              {displayedSuggestions.map((suggestion) => (
-                <button
-                  type="button"
-                  key={suggestion.prompt}
-                  onClick={() => props.onSuggestionSelect?.(suggestion.prompt)}
-                  className="group relative flex min-h-[116px] flex-col overflow-hidden rounded-[22px] border border-white/7 bg-white/[0.04] px-4 py-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-[border-color,background-color,box-shadow] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] hover:border-white/12 hover:bg-white/[0.055] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_12px_28px_rgba(0,0,0,0.18)]"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-[12px] border border-white/9 bg-white/[0.05] text-neutral-100 transition-[transform,border-color,background-color] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] group-hover:-translate-y-0.5 group-hover:border-white/14 group-hover:bg-white/[0.075]">
-                      {renderSuggestionIcon(suggestion.kind)}
-                    </div>
-                    <ChevronIcon className="mt-1 h-3.5 w-3.5 shrink-0 text-neutral-700 transition-[transform,color] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] group-hover:translate-x-0.5 group-hover:text-neutral-300" />
-                  </div>
-
-                  <div className="mt-6">
-                    <div className="text-[14px] font-medium leading-[1.35] tracking-[-0.018em] text-neutral-100">
-                      {suggestion.title}
-                    </div>
-                    <p className="mt-2 max-w-[24ch] text-[12.5px] leading-[1.55] tracking-[-0.012em] text-neutral-500 transition-colors duration-300 group-hover:text-neutral-400">
-                      {suggestion.detail}
-                    </p>
-                  </div>
-                </button>
-              ))}
+              {props.liveStatus ? (
+                <div className="mt-7 w-full max-w-[24rem] rounded-[16px] border border-white/6 bg-white/[0.025] px-4 py-3.5">
+                  <LiveStatusRow status={props.liveStatus} />
+                </div>
+              ) : null}
             </div>
           </section>
-        ) : null}
+
+          {displayedSuggestions.length > 0 ? (
+            <section
+              aria-hidden={!suggestionsVisible}
+              className={`mx-auto w-full max-w-[46rem] pb-2 ${
+                suggestionsVisible ? '' : 'pointer-events-none'
+              }`}
+            >
+              <div className="grid gap-3 md:grid-cols-3">
+                {displayedSuggestions.map((suggestion, index) => (
+                  <AnimatedSuggestionCard
+                    key={suggestion.prompt}
+                    active={suggestionsVisible}
+                    index={index}
+                    icon={renderSuggestionIcon(suggestion.kind)}
+                    suggestion={suggestion}
+                    onSelect={props.onSuggestionSelect}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </div>
       </div>
-    </div>
+    </LazyMotion>
   )
 }
 
