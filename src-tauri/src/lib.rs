@@ -106,6 +106,15 @@ async fn refresh_runtime(state: State<'_, DesktopState>) -> Result<SessionSnapsh
 }
 
 #[tauri::command]
+async fn refresh_rate_limits(state: State<'_, DesktopState>) -> Result<SessionSnapshot, String> {
+    state
+        .runtime
+        .refresh_rate_limits()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn restart_runtime(state: State<'_, DesktopState>) -> Result<SessionSnapshot, String> {
     state.runtime.restart().await.map_err(|error| error.to_string())
 }
@@ -377,9 +386,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_snapshot,
-            refresh_runtime,
-            restart_runtime,
+    get_snapshot,
+    refresh_runtime,
+    refresh_rate_limits,
+    restart_runtime,
             select_thread,
             start_thread,
             send_prompt,

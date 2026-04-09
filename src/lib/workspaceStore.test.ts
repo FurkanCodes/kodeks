@@ -5,6 +5,7 @@ import {
   defaultProjectLabel,
   removeProjectGrouping,
   renameProject,
+  setComposerRateLimitsVisible,
   upsertProject,
   type WorkspaceStore,
 } from './workspaceStore.ts'
@@ -24,6 +25,7 @@ function makeStore(): WorkspaceStore {
     threadPreferences: {},
     ui: {
       sidebarCollapsed: false,
+      showComposerRateLimits: true,
     },
   }
 }
@@ -59,4 +61,11 @@ test('removeProjectGrouping marks existing projects as removed and creates tombs
       removed: true,
     },
   )
+})
+
+test('setComposerRateLimitsVisible updates the persisted ui preference', () => {
+  const next = setComposerRateLimitsVisible(makeStore(), false)
+
+  assert.equal(next.ui.showComposerRateLimits, false)
+  assert.equal(makeStore().ui.showComposerRateLimits, true)
 })

@@ -44,6 +44,13 @@ type ComposerDockProps = {
   workspaceFiles: string[]
   liveTurn: boolean
   authenticated: boolean
+  rateLimitDisplays?: Array<{
+    label: string
+    value: string
+    reset?: string | null
+    tone: 'calm' | 'warning' | 'muted'
+  }> | null
+  showRateLimitsInline: boolean
   busy: boolean
   compactModelMenu?: boolean
   touchModelPreview?: boolean
@@ -643,7 +650,7 @@ export function ComposerDock(props: ComposerDockProps) {
                   className="flex w-full items-center gap-3 px-4 py-2.25 text-left text-[13px] text-neutral-200 transition-colors hover:bg-white/5 hover:text-white"
                 >
                   <GaugeIcon className="h-3.5 w-3.5 text-neutral-300" />
-                  <span className="flex-1 font-medium">Rate limits remaining</span>
+                  <span className="flex-1 font-medium">Open rate limits</span>
                   <ChevronIcon className="h-3.25 w-3.25 text-neutral-500" />
                 </button>
               </div>
@@ -704,6 +711,48 @@ export function ComposerDock(props: ComposerDockProps) {
               </div>
             ) : null}
           </div>
+
+          {props.showRateLimitsInline ? (
+            <button
+              type="button"
+              onClick={props.onOpenRateLimits}
+              title="Open rate limits"
+              className="group flex min-w-0 items-center gap-1.5 text-[12.5px] font-medium text-neutral-300 transition-colors hover:text-white focus-visible:outline-none"
+            >
+              <GaugeIcon className="h-3.25 w-3.25 shrink-0 text-neutral-500" />
+              <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                {props.rateLimitDisplays && props.rateLimitDisplays.length > 0 ? (
+                  props.rateLimitDisplays.map((item, index) => (
+                    <span key={`${item.label}-${index}`} className="inline-flex items-center gap-1.5">
+                      <span className="truncate text-[12px] font-medium text-neutral-200">{item.label}</span>
+                      <span
+                        className={`truncate text-[12px] font-medium ${
+                          item.tone === 'warning'
+                            ? 'text-amber-100'
+                            : item.tone === 'calm'
+                              ? 'text-neutral-100'
+                              : 'text-neutral-400'
+                        }`}
+                      >
+                        {item.value}
+                      </span>
+                      {item.reset ? (
+                        <span className="truncate text-[11.5px] text-neutral-500">
+                          resets {item.reset}
+                        </span>
+                      ) : null}
+                      {index < (props.rateLimitDisplays?.length ?? 0) - 1 ? (
+                        <span className="text-neutral-600">·</span>
+                      ) : null}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-[12px] text-neutral-500">Unavailable</span>
+                )}
+              </span>
+              <ChevronIcon className="h-3 w-3 shrink-0 opacity-45" />
+            </button>
+          ) : null}
         </div>
 
         <p className="mt-2 text-center text-[11.5px] font-medium tracking-[0.005em] text-neutral-500">

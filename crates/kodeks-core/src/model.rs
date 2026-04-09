@@ -35,6 +35,7 @@ impl Default for SessionSnapshot {
                 identity: None,
                 plan: None,
                 rate_limit_summary: None,
+                rate_limits: None,
                 requires_openai_auth: false,
                 login_in_progress: false,
                 login_id: None,
@@ -74,6 +75,7 @@ pub struct AccountSnapshot {
     pub identity: Option<String>,
     pub plan: Option<String>,
     pub rate_limit_summary: Option<String>,
+    pub rate_limits: Option<AccountRateLimits>,
     pub requires_openai_auth: bool,
     pub login_in_progress: bool,
     pub login_id: Option<String>,
@@ -81,6 +83,24 @@ pub struct AccountSnapshot {
     pub auth_notice: Option<String>,
     pub auth_url: Option<String>,
     pub auth_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountRateLimits {
+    pub plan: Option<String>,
+    pub buckets: Vec<AccountRateLimitBucket>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountRateLimitBucket {
+    pub key: String,
+    pub label: String,
+    pub remaining: Option<f64>,
+    pub limit: Option<f64>,
+    pub used: Option<f64>,
+    pub used_percent: Option<f64>,
+    pub reset_at: Option<String>,
+    pub window_minutes: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

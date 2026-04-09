@@ -14,6 +14,7 @@ import {
 } from './components/shell/MessageTimeline'
 import {
   SettingsModal,
+  type SettingsRow,
   type SettingsSection,
   type SettingsSectionKey,
 } from './components/shell/SettingsModal'
@@ -33,8 +34,11 @@ import {
   onSnapshot,
   openWorkspaceFile,
   pickWorkspaceFolder,
+  type RateLimitBucketView,
+  type RateLimitsView,
   type Snapshot,
   readWorkspaceFile,
+  refreshRateLimits,
   refreshRuntime,
   resolveApproval,
   savePastedImage,
@@ -55,6 +59,7 @@ import {
   removeProjectGrouping,
   renameProject,
   saveWorkspaceStore,
+  setComposerRateLimitsVisible,
   setSidebarCollapsed,
   setThreadPreference,
   upsertProject,
@@ -86,6 +91,7 @@ const EMPTY_SNAPSHOT: Snapshot = {
     identity: null,
     plan: null,
     rate_limit_summary: null,
+    rate_limits: null,
     requires_openai_auth: false,
     login_in_progress: false,
     login_id: null,
@@ -186,6 +192,12 @@ type ComposerImageAttachment = {
 }
 
 type PermissionPreset = 'default' | 'full-access'
+type ComposerRateLimitDisplay = {
+  label: string
+  value: string
+  reset?: string | null
+  tone: 'calm' | 'warning' | 'muted'
+}
 
 type ShellNavigationEntry =
   | { kind: 'project'; rootPath: string }
@@ -426,10 +438,24 @@ function App() {
 
   const settingsSections = useMemo(
     () =>
-      buildSettingsSections(snapshot, apiKey, (value) => setApiKey(value), () => {
-        void handleLogout()
-      }),
-    [apiKey, snapshot],
+      buildSettingsSections(
+        snapshot,
+        apiKey,
+        workspaceStore.ui.showComposerRateLimits,
+        (value) => setApiKey(value),
+        () => {
+          setWorkspaceStore((current) => setComposerRateLimitsVisible(current, !current.ui.showComposerRateLimits))
+        },
+        () => {
+          void handleLogout()
+        },
+      ),
+    [apiKey, snapshot, workspaceStore.ui.showComposerRateLimits],
+  )
+
+  const composerRateLimitDisplays = useMemo(
+    () => buildComposerRateLimitDisplays(snapshot.account.rate_limits),
+    [snapshot.account.rate_limits],
   )
 
   const noticeContent = useMemo<ReactNode | undefined>(() => {
@@ -1287,9 +1313,18 @@ function App() {
     }
   }
 
-  function handleOpenRateLimits() {
-    setActiveSettingsSection('account')
-    setSettingsOpen(true)
+  async function handleOpenRateLimits() {
+    setBusy(true)
+    setError(null)
+    try {
+      setSnapshot(await refreshRateLimits())
+    } catch (nextError) {
+      setError(stringifyError(nextError))
+    } finally {
+      setBusy(false)
+      setActiveSettingsSection('account')
+      setSettingsOpen(true)
+    }
   }
 
   function findShellHistoryIndex(direction: -1 | 1) {
@@ -1464,6 +1499,8 @@ function App() {
                 workspaceFiles={workspaceFiles}
                 liveTurn={Boolean(activeTurnId)}
                 authenticated={snapshot.account.status === 'authenticated'}
+                rateLimitDisplays={composerRateLimitDisplays}
+                showRateLimitsInline={workspaceStore.ui.showComposerRateLimits}
                 busy={busy}
                 compactModelMenu={compactModelMenu}
                 touchModelPreview={touchModelPreview}
@@ -2407,7 +2444,9 @@ function buildBadgeLabel(
 function buildSettingsSections(
   snapshot: Snapshot,
   apiKey: string,
+  showComposerRateLimits: boolean,
   onApiKeyInput: (value: string) => void,
+  onToggleComposerRateLimits: () => void,
   onSignOut: () => void,
 ): SettingsSection[] {
   return [
@@ -2421,27 +2460,35 @@ function buildSettingsSections(
             {
               kind: 'text',
               label: 'Signed in as',
-              description: 'Identity currently active in the local Codex runtime.',
+              description: 'Active identity.',
               value: snapshot.account.identity || 'Not signed in',
               disabled: true,
             },
             {
               kind: 'text',
               label: 'Plan',
-              description: 'Current account plan reported by Codex.',
+              description: 'Current plan.',
               value: humanizePlan(snapshot.account.plan),
               disabled: true,
             },
             {
               kind: 'text',
               label: 'API key draft',
-              description: 'Staged locally until you submit sign-in from the main surface.',
+              description: 'Local draft.',
               value: apiKey,
               placeholder: 'Paste API key',
               inputType: 'password',
               onInput: onApiKeyInput,
             },
           ],
+        },
+        {
+          title: 'Rate limits',
+          rows: buildAccountRateLimitRows(
+            snapshot,
+            showComposerRateLimits,
+            onToggleComposerRateLimits,
+          ),
         },
       ],
       actionLabel: 'Sign out',
@@ -2458,14 +2505,14 @@ function buildSettingsSections(
             {
               kind: 'text',
               label: 'Model',
-              description: 'Model currently advertised by the runtime.',
+              description: 'Current model.',
               value: snapshot.session.model || 'Codex default',
               disabled: true,
             },
             {
               kind: 'text',
               label: 'Reasoning effort',
-              description: 'Current reasoning effort remembered by Kodeks.',
+              description: 'Current effort.',
               value: formatReasoningEffortLabel(snapshot.session.reasoning_effort || 'medium'),
               disabled: true,
             },
@@ -2474,6 +2521,203 @@ function buildSettingsSections(
       ],
     },
   ]
+}
+
+function buildAccountRateLimitRows(
+  snapshot: Snapshot,
+  showComposerRateLimits: boolean,
+  onToggleComposerRateLimits: () => void,
+): SettingsRow[] {
+  const rateLimits = snapshot.account.rate_limits
+  const buckets = (rateLimits?.buckets || []).map((bucket) => ({
+    key: bucket.key,
+    label: formatRateLimitBucketLabel(bucket) || bucket.label || titleCase(bucket.key || 'rate limit'),
+    primary: formatRateLimitPrimaryValue(bucket),
+    secondary: describeRateLimitBucket(bucket),
+    tone: rateLimitTone(bucket),
+  }))
+
+  return [
+    {
+      kind: 'rateLimits',
+      label: 'Runtime rate limits',
+      description:
+        buckets.length > 0 ? 'Remaining first.' : 'Waiting on runtime data.',
+      planLabel: rateLimits?.plan ? humanizePlan(rateLimits.plan) : undefined,
+      composerVisible: showComposerRateLimits,
+      onToggleComposerVisible: onToggleComposerRateLimits,
+      buckets,
+      emptyMessage:
+        'No runtime rate limits yet.',
+    },
+  ]
+}
+
+function formatRateLimitPrimaryValue(bucket: {
+  remaining?: number | null
+  limit?: number | null
+  used?: number | null
+  used_percent?: number | null
+}) {
+  if (typeof bucket.remaining === 'number') {
+    return `${formatRateLimitNumber(bucket.remaining)} left`
+  }
+
+  if (typeof bucket.limit === 'number' && typeof bucket.used === 'number') {
+    return `${formatRateLimitNumber(Math.max(bucket.limit - bucket.used, 0))} left`
+  }
+
+  if (typeof bucket.used_percent === 'number') {
+    return `${formatRateLimitNumber(Math.max(100 - bucket.used_percent, 0))}% left`
+  }
+
+  if (typeof bucket.used === 'number') {
+    return `${formatRateLimitNumber(bucket.used)} used`
+  }
+
+  return 'Remaining unavailable'
+}
+
+function describeRateLimitBucket(bucket: {
+  remaining?: number | null
+  limit?: number | null
+  used?: number | null
+  used_percent?: number | null
+  reset_at?: string | null
+  window_minutes?: number | null
+}) {
+  const details: string[] = []
+  if (bucket.reset_at) {
+    details.push(`Resets ${formatRateLimitReset(bucket.reset_at)}`)
+  }
+  if (typeof bucket.window_minutes === 'number') {
+    details.push(`Window ${formatRateLimitWindow(bucket.window_minutes)}`)
+  }
+  if (typeof bucket.limit === 'number') {
+    details.push(`Limit ${formatRateLimitNumber(bucket.limit)}`)
+  }
+  if (typeof bucket.used === 'number' && details.length === 0) {
+    details.push(`Used ${formatRateLimitNumber(bucket.used)}`)
+  }
+  if (typeof bucket.used_percent === 'number' && details.length === 0) {
+    details.push(`${formatRateLimitNumber(Math.max(100 - bucket.used_percent, 0))}% left`)
+  }
+
+  if (details.length > 0) {
+    return details.join(' • ')
+  }
+
+  if (typeof bucket.remaining !== 'number') {
+    return 'No remaining data yet.'
+  }
+
+  return 'Remaining available.'
+}
+
+function rateLimitTone(bucket: Pick<RateLimitBucketView, 'remaining' | 'limit' | 'used_percent'>) {
+  if (typeof bucket.remaining === 'number' && typeof bucket.limit === 'number' && bucket.limit > 0) {
+    const ratio = bucket.remaining / bucket.limit
+    if (ratio <= 0.15) {
+      return 'warning' as const
+    }
+    return 'calm' as const
+  }
+
+  if (typeof bucket.used_percent === 'number') {
+    if (bucket.used_percent >= 85) {
+      return 'warning' as const
+    }
+    if (bucket.used_percent <= 60) {
+      return 'calm' as const
+    }
+  }
+
+  return 'muted' as const
+}
+
+function buildComposerRateLimitDisplays(rateLimits?: RateLimitsView | null): ComposerRateLimitDisplay[] | null {
+  if (!rateLimits || rateLimits.buckets.length === 0) {
+    return null
+  }
+
+  return rateLimits.buckets.slice(0, 2).map((bucket) => ({
+    label: formatRateLimitBucketLabel(bucket) || bucket.label || titleCase(bucket.key || 'rate limit'),
+    value: formatRateLimitPrimaryValue(bucket),
+    reset: bucket.reset_at ? formatRateLimitReset(bucket.reset_at) : null,
+    tone: rateLimitTone(bucket),
+  }))
+}
+
+function formatRateLimitWindow(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 'n/a'
+  }
+  if (Math.round(value) === 10080) {
+    return 'weekly'
+  }
+  if (value >= 60) {
+    const hours = value / 60
+    if (Number.isInteger(hours)) {
+      return `${hours}h`
+    }
+    return `${hours.toFixed(1)}h`
+  }
+  return `${Math.round(value)}m`
+}
+
+function formatRateLimitBucketLabel(bucket: {
+  label?: string | null
+  window_minutes?: number | null
+}) {
+  if (typeof bucket.window_minutes === 'number') {
+    return formatRateLimitWindow(bucket.window_minutes)
+  }
+
+  if (bucket.label) {
+    return bucket.label.toLowerCase()
+  }
+
+  return null
+}
+
+function formatRateLimitReset(value: string) {
+  const trimmed = value.trim()
+  if (/^\d+$/.test(trimmed)) {
+    const numeric = Number(trimmed)
+    if (Number.isFinite(numeric)) {
+      const millis = numeric < 1_000_000_000_000 ? numeric * 1000 : numeric
+      const date = new Date(millis)
+      if (!Number.isNaN(date.getTime())) {
+        return new Intl.DateTimeFormat('en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        }).format(date)
+      }
+    }
+  }
+
+  const timestamp = Date.parse(trimmed)
+  if (Number.isNaN(timestamp)) {
+    return value
+  }
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(timestamp))
+}
+
+function formatRateLimitNumber(value: number) {
+  if (!Number.isFinite(value)) {
+    return '0'
+  }
+  if (Math.abs(value - Math.round(value)) < 0.01) {
+    return Math.round(value).toLocaleString('en-US')
+  }
+  return value.toFixed(1)
 }
 
 function fallbackModels(snapshot: Snapshot): ModelOption[] {

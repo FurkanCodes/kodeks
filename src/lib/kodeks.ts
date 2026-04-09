@@ -19,6 +19,7 @@ export type Snapshot = {
     identity?: string | null
     plan?: string | null
     rate_limit_summary?: string | null
+    rate_limits?: RateLimitsView | null
     requires_openai_auth: boolean
     login_in_progress: boolean
     login_id?: string | null
@@ -56,6 +57,22 @@ export type Snapshot = {
     turn_id: string
     diff: string
   } | null
+}
+
+export type RateLimitsView = {
+  plan?: string | null
+  buckets: RateLimitBucketView[]
+}
+
+export type RateLimitBucketView = {
+  key: string
+  label: string
+  remaining?: number | null
+  limit?: number | null
+  used?: number | null
+  used_percent?: number | null
+  reset_at?: string | null
+  window_minutes?: number | null
 }
 
 export type ThreadSummary = {
@@ -156,6 +173,10 @@ export async function getSnapshot() {
 
 export async function refreshRuntime() {
   return invoke<Snapshot>('refresh_runtime')
+}
+
+export async function refreshRateLimits() {
+  return invoke<Snapshot>('refresh_rate_limits')
 }
 
 export async function restartRuntime() {

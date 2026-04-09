@@ -12,9 +12,10 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::model::{
-    AccountSnapshot, ApprovalEntry, DiagnosticTrace, DiagnosticWarning, DiffSnapshot, MetadataRow,
-    ModelOption, ReasoningEffortOption, SessionSnapshot, ThreadConfigOverride, ThreadSummary,
-    TimelineAttachment, TimelineEntry, TimelineFileChange, UserInputItem,
+    AccountRateLimitBucket, AccountRateLimits, AccountSnapshot, ApprovalEntry, DiagnosticTrace,
+    DiagnosticWarning, DiffSnapshot, MetadataRow, ModelOption, ReasoningEffortOption,
+    SessionSnapshot, ThreadConfigOverride, ThreadSummary, TimelineAttachment, TimelineEntry,
+    TimelineFileChange, UserInputItem,
 };
 
 const TRACE_CAP: usize = 120;
@@ -66,6 +67,12 @@ impl RuntimeHandle {
 
     pub async fn refresh(&self) -> Result<SessionSnapshot> {
         self.send(ControlMessageKind::Refresh)
+            .await
+            .and_then(expect_snapshot)
+    }
+
+    pub async fn refresh_rate_limits(&self) -> Result<SessionSnapshot> {
+        self.send(ControlMessageKind::RefreshRateLimits)
             .await
             .and_then(expect_snapshot)
     }
@@ -296,6 +303,7 @@ struct ControlMessage {
 enum ControlMessageKind {
     Snapshot,
     Refresh,
+    RefreshRateLimits,
     Restart,
     SelectThread {
         thread_id: String,
@@ -468,6 +476,10 @@ impl Controller {
                 self.refresh_runtime().await?;
                 Ok(ControlResponse::Snapshot(self.snapshot.clone()))
             }
+            ControlMessageKind::RefreshRateLimits => {
+                let _ = self.refresh_rate_limits().await;
+                Ok(ControlResponse::Snapshot(self.snapshot.clone()))
+            }
             ControlMessageKind::Restart => {
                 self.restart_runtime().await?;
                 Ok(ControlResponse::Snapshot(self.snapshot.clone()))
@@ -491,7 +503,8 @@ impl Controller {
                 attachments,
                 config,
             } => {
-                self.send_prompt(thread_id, prompt, attachments, config).await?;
+                self.send_prompt(thread_id, prompt, attachments, config)
+                    .await?;
                 Ok(ControlResponse::Snapshot(self.snapshot.clone()))
             }
             ControlMessageKind::SteerTurn {
@@ -762,7 +775,8 @@ impl Controller {
         self.publish_snapshot();
 
         if !prompt.trim().is_empty() || !attachments.is_empty() {
-            self.send_prompt(thread_id, prompt, attachments, config).await?;
+            self.send_prompt(thread_id, prompt, attachments, config)
+                .await?;
         }
         Ok(())
     }
@@ -1020,14 +1034,7 @@ impl Controller {
                         let _ = self.refresh_account().await;
                     }
                     "account/rateLimits/updated" => {
-                        if let Some(rate_limits) = params.get("rateLimits") {
-                            self.snapshot.account.rate_limit_summary =
-                                Some(summarize_json(rate_limits));
-                            if let Some(plan) = rate_limits.get("planType").and_then(Value::as_str)
-                            {
-                                self.snapshot.account.plan = Some(plan.to_string());
-                            }
-                        }
+                        self.apply_rate_limits_response(&params);
                     }
                     "account/login/completed" => {
                         self.snapshot.account.login_in_progress = false;
@@ -1381,11 +1388,16 @@ impl Controller {
     }
 
     fn apply_rate_limits_response(&mut self, value: &Value) {
-        if let Some(rate_limits) = value.get("rateLimits") {
+        if let Some(rate_limits) = account_rate_limits_payload(None, value) {
             self.snapshot.account.rate_limit_summary = Some(summarize_json(rate_limits));
-            if let Some(plan) = rate_limits.get("planType").and_then(Value::as_str) {
-                self.snapshot.account.plan = Some(plan.to_string());
+            let structured = normalize_account_rate_limits(rate_limits);
+            if let Some(plan) = structured.plan.clone() {
+                self.snapshot.account.plan = Some(plan);
             }
+            self.snapshot.account.rate_limits = Some(structured);
+        } else {
+            self.snapshot.account.rate_limit_summary = None;
+            self.snapshot.account.rate_limits = None;
         }
     }
 
@@ -1779,6 +1791,11 @@ fn format_thread_status(value: Option<&Value>) -> String {
 fn build_account_snapshot(previous: &AccountSnapshot, value: &Value) -> AccountSnapshot {
     let account_value = value.get("account").filter(|account| !account.is_null());
     let authenticated = account_value.is_some();
+    let rate_limits_payload = account_rate_limits_payload(account_value, value);
+    let rate_limits = rate_limits_payload.map(normalize_account_rate_limits);
+    let plan = account_value
+        .and_then(account_plan)
+        .or_else(|| rate_limits.as_ref().and_then(|limits| limits.plan.clone()));
     let mut account = AccountSnapshot {
         status: if authenticated {
             "authenticated".to_string()
@@ -1791,8 +1808,9 @@ fn build_account_snapshot(previous: &AccountSnapshot, value: &Value) -> AccountS
             .unwrap_or("unknown")
             .to_string(),
         identity: account_value.and_then(account_identity),
-        plan: account_value.and_then(account_plan),
-        rate_limit_summary: account_rate_limit_summary(account_value, value),
+        plan,
+        rate_limit_summary: rate_limits_payload.map(summarize_json),
+        rate_limits,
         requires_openai_auth: value
             .get("requiresOpenaiAuth")
             .and_then(Value::as_bool)
@@ -1827,7 +1845,10 @@ fn account_plan(value: &Value) -> Option<String> {
         .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_string))
 }
 
-fn account_rate_limit_summary(account_value: Option<&Value>, root: &Value) -> Option<String> {
+fn account_rate_limits_payload<'a>(
+    account_value: Option<&'a Value>,
+    root: &'a Value,
+) -> Option<&'a Value> {
     account_value
         .and_then(|account| {
             ["rateLimit", "rateLimits", "limits", "usage"]
@@ -1839,7 +1860,131 @@ fn account_rate_limit_summary(account_value: Option<&Value>, root: &Value) -> Op
                 .iter()
                 .find_map(|key| root.get(*key))
         })
-        .map(summarize_json)
+}
+
+fn normalize_account_rate_limits(value: &Value) -> AccountRateLimits {
+    let plan = ["planType", "plan", "subscription"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_string));
+
+    let mut buckets = Vec::new();
+
+    if rate_limit_bucket_like(value) {
+        buckets.push(parse_rate_limit_bucket("primary", value));
+    }
+
+    if let Some(object) = value.as_object() {
+        for (key, nested) in object {
+            if is_rate_limit_metadata_key(key) || !rate_limit_bucket_like(nested) {
+                continue;
+            }
+            if buckets
+                .iter()
+                .any(|bucket: &AccountRateLimitBucket| bucket.key == *key)
+            {
+                continue;
+            }
+            buckets.push(parse_rate_limit_bucket(key, nested));
+        }
+    }
+
+    AccountRateLimits { plan, buckets }
+}
+
+fn parse_rate_limit_bucket(key: &str, value: &Value) -> AccountRateLimitBucket {
+    AccountRateLimitBucket {
+        key: key.to_string(),
+        label: humanize_rate_limit_key(key),
+        remaining: number_at(value, &["remaining"]),
+        limit: number_at(value, &["limit", "max", "total"]),
+        used: number_at(value, &["used"]),
+        used_percent: number_at(value, &["usedPercent", "used_percent"]),
+        reset_at: stringish_at(value, &["resetAt", "reset_at", "resetsAt", "resets_at"]),
+        window_minutes: parse_window_minutes(value),
+    }
+}
+
+fn parse_window_minutes(value: &Value) -> Option<f64> {
+    number_at(value, &["windowDurationMins", "windowMinutes"])
+        .or_else(|| {
+            number_at(value, &["windowDurationSecs", "windowSeconds"]).map(|seconds| seconds / 60.0)
+        })
+        .or_else(|| {
+            number_at(value, &["windowDurationMs"]).map(|milliseconds| milliseconds / 60_000.0)
+        })
+}
+
+fn number_at(value: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_f64))
+}
+
+fn stringish_at(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|candidate| {
+            candidate
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| candidate.as_i64().map(|number| number.to_string()))
+                .or_else(|| candidate.as_u64().map(|number| number.to_string()))
+                .or_else(|| candidate.as_f64().map(|number| number.to_string()))
+        })
+    })
+}
+
+fn is_rate_limit_metadata_key(key: &str) -> bool {
+    matches!(
+        key,
+        "planType" | "plan" | "subscription" | "updatedAt" | "updated_at" | "type"
+    )
+}
+
+fn rate_limit_bucket_like(value: &Value) -> bool {
+    value.is_object()
+        && [
+            "remaining",
+            "limit",
+            "max",
+            "total",
+            "used",
+            "usedPercent",
+            "used_percent",
+            "resetAt",
+            "reset_at",
+            "resetsAt",
+            "resets_at",
+            "windowDurationMins",
+            "windowMinutes",
+            "windowDurationSecs",
+            "windowSeconds",
+            "windowDurationMs",
+        ]
+        .iter()
+        .any(|key| value.get(*key).is_some())
+}
+
+fn humanize_rate_limit_key(value: &str) -> String {
+    let cleaned = value.trim().replace('_', " ").replace('-', " ");
+    if cleaned.is_empty() {
+        return "Primary".to_string();
+    }
+
+    cleaned
+        .split_whitespace()
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut output = String::new();
+                    output.extend(first.to_uppercase());
+                    output.push_str(chars.as_str().to_lowercase().as_str());
+                    output
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn login_notice(value: &Value) -> Option<String> {
@@ -1997,7 +2142,7 @@ fn timeline_entry_from_item(
                     .filter_map(Value::as_str)
                     .collect::<Vec<_>>()
                     .join("\n")
-                }),
+            }),
             metadata: Vec::new(),
             file_changes: Vec::new(),
             attachments: Vec::new(),
@@ -2101,14 +2246,16 @@ fn summarize_user_message_text(content: Option<&Value>) -> String {
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| match item.get("type").and_then(Value::as_str).unwrap_or_default() {
-                    "text" => Some(
-                        item.get("text")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                    ),
-                    _ => None,
+                .filter_map(|item| {
+                    match item.get("type").and_then(Value::as_str).unwrap_or_default() {
+                        "text" => Some(
+                            item.get("text")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                        ),
+                        _ => None,
+                    }
                 })
                 .filter(|value| !value.trim().is_empty())
                 .collect::<Vec<_>>()
@@ -2123,16 +2270,18 @@ fn summarize_user_attachments(content: Option<&Value>) -> Vec<TimelineAttachment
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| match item.get("type").and_then(Value::as_str).unwrap_or_default() {
-                    "localImage" => Some(TimelineAttachment {
-                        kind: "localImage".to_string(),
-                        path: item.get("path").and_then(Value::as_str).map(str::to_string),
-                    }),
-                    "image" => Some(TimelineAttachment {
-                        kind: "image".to_string(),
-                        path: None,
-                    }),
-                    _ => None,
+                .filter_map(|item| {
+                    match item.get("type").and_then(Value::as_str).unwrap_or_default() {
+                        "localImage" => Some(TimelineAttachment {
+                            kind: "localImage".to_string(),
+                            path: item.get("path").and_then(Value::as_str).map(str::to_string),
+                        }),
+                        "image" => Some(TimelineAttachment {
+                            kind: "image".to_string(),
+                            path: None,
+                        }),
+                        _ => None,
+                    }
                 })
                 .collect()
         })
@@ -2288,7 +2437,10 @@ fn build_turn_input(prompt: &str, attachments: &[UserInputItem]) -> Value {
 
     for attachment in attachments {
         match attachment {
-            UserInputItem::Text { text, text_elements } => {
+            UserInputItem::Text {
+                text,
+                text_elements,
+            } => {
                 if !text.trim().is_empty() {
                     input.push(json!({
                         "type": "text",
@@ -2674,9 +2826,9 @@ mod tests {
         cap_timeline_entries, command_execution_metadata, fallback_thread_summary,
         format_approval_body, format_duration_ms, login_notice, map_generic_approval_decision,
         parse_model_option, parse_reasoning_effort_option, parse_reasoning_effort_options,
-        push_capped, redact_json_value, sanitize_trace_message,
-        should_publish_stream_snapshot, truncate_with_notice, AccountSnapshot,
-        ApprovalEntry, Controller, MetadataRow, TimelineEntry, OUTPUT_CAP,
+        push_capped, redact_json_value, sanitize_trace_message, should_publish_stream_snapshot,
+        truncate_with_notice, AccountSnapshot, ApprovalEntry, Controller, MetadataRow,
+        TimelineEntry, OUTPUT_CAP,
     };
     use crate::{ReasoningEffortOption, ThreadConfigOverride};
     use kodeks_protocol::ProtocolEvent;
@@ -2903,6 +3055,7 @@ mod tests {
             identity: None,
             plan: None,
             rate_limit_summary: None,
+            rate_limits: None,
             requires_openai_auth: true,
             login_in_progress: false,
             login_id: None,
@@ -2937,6 +3090,80 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("\"remaining\": 42"));
+        assert_eq!(
+            snapshot
+                .rate_limits
+                .as_ref()
+                .and_then(|limits| limits.buckets.first())
+                .and_then(|bucket| bucket.remaining),
+            Some(42.0)
+        );
+        assert_eq!(
+            snapshot
+                .rate_limits
+                .as_ref()
+                .and_then(|limits| limits.buckets.first())
+                .and_then(|bucket| bucket.reset_at.as_deref()),
+            Some("2026-04-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn account_snapshot_normalizes_rate_limits_buckets() {
+        let previous = AccountSnapshot {
+            status: "authorizing".to_string(),
+            mode: "unknown".to_string(),
+            identity: None,
+            plan: None,
+            rate_limit_summary: None,
+            rate_limits: None,
+            requires_openai_auth: true,
+            login_in_progress: false,
+            login_id: None,
+            last_login_error: None,
+            auth_notice: None,
+            auth_url: None,
+            auth_code: None,
+        };
+
+        let snapshot = build_account_snapshot(
+            &previous,
+            &json!({
+                "rateLimits": {
+                    "planType": "pro",
+                    "primary": {
+                        "remaining": 12,
+                        "limit": 50,
+                        "usedPercent": 76,
+                        "windowDurationMins": 60
+                    },
+                    "secondary_bucket": {
+                        "used": 25,
+                        "windowSeconds": 1800
+                    }
+                },
+                "account": {
+                    "type": "chatgpt",
+                    "email": "furkan@example.com"
+                }
+            }),
+        );
+
+        let limits = snapshot
+            .rate_limits
+            .as_ref()
+            .expect("expected structured limits");
+        assert_eq!(limits.plan.as_deref(), Some("pro"));
+        assert_eq!(limits.buckets.len(), 2);
+        assert_eq!(limits.buckets[0].label, "Primary");
+        assert_eq!(limits.buckets[0].remaining, Some(12.0));
+        assert_eq!(limits.buckets[0].limit, Some(50.0));
+        assert_eq!(limits.buckets[0].used_percent, Some(76.0));
+        assert_eq!(limits.buckets[0].window_minutes, Some(60.0));
+        assert_eq!(limits.buckets[1].label, "Secondary Bucket");
+        assert_eq!(limits.buckets[1].remaining, None);
+        assert_eq!(limits.buckets[1].used, Some(25.0));
+        assert_eq!(limits.buckets[1].window_minutes, Some(30.0));
     }
 
     #[test]
@@ -2947,6 +3174,7 @@ mod tests {
             identity: None,
             plan: None,
             rate_limit_summary: None,
+            rate_limits: None,
             requires_openai_auth: false,
             login_in_progress: true,
             login_id: Some("login-1".to_string()),
@@ -2972,6 +3200,7 @@ mod tests {
         );
         assert_eq!(snapshot.login_id.as_deref(), Some("login-1"));
         assert_eq!(snapshot.auth_code.as_deref(), Some("ABCD-1234"));
+        assert!(snapshot.rate_limits.is_none());
     }
 
     #[test]
@@ -3413,6 +3642,7 @@ mod tests {
             identity: None,
             plan: None,
             rate_limit_summary: None,
+            rate_limits: None,
             requires_openai_auth: false,
             login_in_progress: true,
             login_id: Some("login-99".to_string()),
@@ -3514,6 +3744,25 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("\"usedPercent\": 64"));
+        assert_eq!(
+            controller
+                .snapshot
+                .account
+                .rate_limits
+                .as_ref()
+                .and_then(|limits| limits.plan.as_deref()),
+            Some("pro")
+        );
+        assert_eq!(
+            controller
+                .snapshot
+                .account
+                .rate_limits
+                .as_ref()
+                .and_then(|limits| limits.buckets.first())
+                .and_then(|bucket| bucket.used_percent),
+            Some(64.0)
+        );
     }
 
     #[tokio::test]
@@ -3631,7 +3880,10 @@ mod tests {
         }))
         .expect("model option should parse");
 
-        assert_eq!(parsed.description, "Flagship frontier agentic coding model.");
+        assert_eq!(
+            parsed.description,
+            "Flagship frontier agentic coding model."
+        );
     }
 
     #[test]

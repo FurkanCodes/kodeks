@@ -39,6 +39,7 @@ function makeStore(): WorkspaceStore {
     threadPreferences: {},
     ui: {
       sidebarCollapsed: false,
+      showComposerRateLimits: true,
     },
   }
 }
