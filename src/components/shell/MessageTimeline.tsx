@@ -1,6 +1,14 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef } from 'react'
-import { ChevronIcon, FileCodeIcon, FolderOpenIcon, SearchIcon } from './icons'
+import {
+  BranchIcon,
+  ChevronIcon,
+  FileCodeIcon,
+  FolderOpenIcon,
+  NoteIcon,
+  SearchIcon,
+  TerminalIcon,
+} from './icons'
 
 const FILE_TOKEN_PATTERN = String.raw`(?:\/Users\/[^\s)]+|(?:[\w.-]+\/)*[\w.-]+\.(?:tsx?|jsx?|py|rs|json|md|css|html|toml|ya?ml))(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?)?(?:\s+\(line\s+\d+\))?`
 const FILE_TOKEN_REGEX = new RegExp(`(${FILE_TOKEN_PATTERN})`, 'g')
@@ -41,6 +49,13 @@ export type ChatAttachment = {
   path?: string | null
 }
 
+export type QuickStartSuggestion = {
+  kind: 'review' | 'plan' | 'explore' | 'diagnose'
+  title: string
+  detail: string
+  prompt: string
+}
+
 export type ChatMessage = {
   id: string
   author: 'You' | 'Agent' | 'System'
@@ -65,11 +80,13 @@ type LiveStatusView = {
 type MessageTimelineProps = {
   messages: ChatMessage[]
   liveStatus?: LiveStatusView | null
-  suggestions?: string[]
+  suggestions?: QuickStartSuggestion[]
+  composerEngaged?: boolean
   emptyState?: {
     eyebrow?: string
     title: string
-    description: string
+    projectLabel?: string
+    description?: string
     projectPath?: string | null
   }
   focusedMessageId?: string | null
@@ -1044,66 +1061,139 @@ function LiveStatusRow(props: { status: LiveStatusView }) {
 }
 
 function EmptyState(props: {
-  suggestions: string[]
+  suggestions: QuickStartSuggestion[]
+  composerEngaged?: boolean
   emptyState?: MessageTimelineProps['emptyState']
   liveStatus?: LiveStatusView | null
   onSuggestionSelect?: (value: string) => void
 }) {
+  const suggestionsHidden = props.composerEngaged
+  const projectTail = props.emptyState?.projectPath ? tailPath(props.emptyState.projectPath) : null
+  const showProjectTail =
+    projectTail &&
+    (!props.emptyState?.projectLabel || projectTail.toLowerCase() !== props.emptyState.projectLabel.toLowerCase())
+
+  function renderSuggestionIcon(kind: QuickStartSuggestion['kind']) {
+    switch (kind) {
+      case 'review':
+        return <BranchIcon className="h-4 w-4 text-neutral-200" />
+      case 'plan':
+        return <NoteIcon className="h-4 w-4 text-neutral-200" />
+      case 'explore':
+        return <SearchIcon className="h-4 w-4 text-neutral-200" />
+      case 'diagnose':
+        return <TerminalIcon className="h-4 w-4 text-neutral-200" />
+    }
+  }
+
   return (
-    <div className="flex h-full justify-center px-6 pb-10 pt-14">
-      <div className="w-full max-w-[48rem]">
-        <div className="mx-auto max-w-[38rem]">
-          {props.emptyState?.eyebrow ? (
-            <div className="mb-3 flex items-center justify-center gap-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500">
-              <span>{props.emptyState.eyebrow}</span>
-              {props.emptyState?.projectPath ? <div className="h-px w-8 bg-white/8" /> : null}
-              {props.emptyState?.projectPath ? (
-                <span className="max-w-[20rem] truncate text-[11px] normal-case tracking-[-0.01em] text-neutral-600">
-                  {tailPath(props.emptyState.projectPath)}
-                </span>
+    <div className="flex h-full items-center justify-center px-6 pb-12 pt-10">
+      <div className="w-full max-w-[54rem]">
+        <div className="grid gap-10 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:items-start">
+          <section className="flex flex-col items-center text-center lg:items-start lg:text-left">
+            <div className="shell-fade-rise inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
+              <FolderOpenIcon className="h-3.5 w-3.5 text-neutral-300" />
+              <span>{props.emptyState?.eyebrow || 'Project'}</span>
+              {props.emptyState?.projectLabel ? (
+                <>
+                  <span className="h-1 w-1 rounded-full bg-white/18" />
+                  <span className="max-w-[14rem] truncate normal-case tracking-[-0.01em] text-neutral-200">
+                    {props.emptyState.projectLabel}
+                  </span>
+                </>
               ) : null}
             </div>
-          ) : null}
 
-          <h1 className="mx-auto max-w-[30rem] text-center text-[length:var(--text-display)] font-medium leading-[0.96] tracking-[-0.05em] text-white">
-            {props.emptyState?.title || 'What are we building today?'}
-          </h1>
+            {showProjectTail ? (
+              <div
+                className="shell-fade-rise mt-3 max-w-[20rem] truncate text-[12px] tracking-[-0.012em] text-neutral-600"
+                style={{ animationDelay: '40ms' }}
+              >
+                {projectTail}
+              </div>
+            ) : null}
 
-          {props.emptyState?.description ? (
-            <p className="mx-auto mt-4 max-w-[29rem] text-center text-[16px] leading-[1.7] tracking-[-0.015em] text-neutral-400">
-              {props.emptyState.description}
-            </p>
-          ) : null}
+            <h1
+              className="shell-fade-rise mt-5 max-w-[12ch] text-[length:var(--text-display)] font-medium leading-[0.92] tracking-[-0.05em] text-white"
+              style={{ animationDelay: '80ms' }}
+            >
+              {props.emptyState?.title || 'What are we building today?'}
+            </h1>
 
-          {props.liveStatus ? (
-            <div className="mx-auto mt-8 max-w-[26rem] rounded-[16px] border border-white/6 bg-white/[0.025] px-4 py-3.5">
-              <LiveStatusRow status={props.liveStatus} />
-            </div>
+            {props.emptyState?.description ? (
+              <p
+                className="shell-fade-rise mt-4 max-w-[26rem] text-[15px] leading-[1.68] tracking-[-0.015em] text-neutral-400"
+                style={{ animationDelay: '120ms' }}
+              >
+                {props.emptyState.description}
+              </p>
+            ) : null}
+
+            {props.liveStatus ? (
+              <div
+                className="shell-fade-rise mt-7 w-full max-w-[24rem] rounded-[16px] border border-white/6 bg-white/[0.025] px-4 py-3.5"
+                style={{ animationDelay: '160ms' }}
+              >
+                <LiveStatusRow status={props.liveStatus} />
+              </div>
+            ) : null}
+          </section>
+
+          {props.suggestions.length > 0 ? (
+            <section
+              aria-hidden={suggestionsHidden}
+              className={`grid overflow-hidden transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
+                suggestionsHidden ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'
+              }`}
+            >
+              <div className="overflow-hidden">
+                <div
+                  className={`transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
+                    suggestionsHidden ? 'translate-y-3 opacity-0' : 'translate-y-0 opacity-100'
+                  }`}
+                >
+                  <div className="mb-4 flex flex-col items-center text-center lg:items-start lg:text-left">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-600">
+                      Quick starts
+                    </div>
+                    <div className="mt-1 text-[13px] leading-[1.5] tracking-[-0.01em] text-neutral-500">
+                      Pick a concrete first move. Your first prompt opens the thread.
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {props.suggestions.map((suggestion, index) => (
+                      <button
+                        type="button"
+                        disabled={suggestionsHidden}
+                        key={suggestion.prompt}
+                        onClick={() => props.onSuggestionSelect?.(suggestion.prompt)}
+                        className="group shell-fade-rise relative flex min-h-[148px] flex-col rounded-[18px] border border-white/7 bg-white/[0.025] p-4 text-left transition-[border-color,background-color,transform] duration-200 hover:-translate-y-0.5 hover:border-white/14 hover:bg-white/[0.04] disabled:pointer-events-none"
+                        style={{ animationDelay: `${180 + index * 45}ms` }}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex h-9 w-9 items-center justify-center rounded-[12px] border border-white/8 bg-white/[0.04]">
+                            {renderSuggestionIcon(suggestion.kind)}
+                          </div>
+                          <ChevronIcon className="mt-1 h-3.5 w-3.5 shrink-0 text-neutral-700 transition-all group-hover:translate-x-0.5 group-hover:text-neutral-300" />
+                        </div>
+
+                        <div className="mt-7">
+                          <div className="text-[15px] font-medium leading-[1.35] tracking-[-0.018em] text-neutral-100">
+                            {suggestion.title}
+                          </div>
+                          <p className="mt-2 max-w-[24ch] text-[13px] leading-[1.55] tracking-[-0.012em] text-neutral-500 transition-colors group-hover:text-neutral-400">
+                            {suggestion.detail}
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </section>
           ) : null}
         </div>
-
-        {props.suggestions.length > 0 ? (
-          <div className="mx-auto mt-12 max-w-[54rem]">
-            <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-600">
-              Start With
-            </div>
-            <div className="grid gap-x-6 sm:grid-cols-2">
-              {props.suggestions.map((suggestion) => (
-                <button
-                  type="button"
-                  key={suggestion}
-                  onClick={() => props.onSuggestionSelect?.(suggestion)}
-                  className="group flex items-start justify-between border-t border-white/7 py-3 text-left transition-colors hover:border-white/16"
-                >
-                  <span className="max-w-[23rem] text-[16px] leading-[1.45] tracking-[-0.018em] text-neutral-400 transition-colors group-hover:text-neutral-100">
-                    {suggestion}
-                  </span>
-                  <ChevronIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-neutral-700 transition-all group-hover:translate-x-0.5 group-hover:text-neutral-300" />
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
       </div>
     </div>
   )
@@ -1147,6 +1237,7 @@ export function MessageTimeline(props: MessageTimelineProps) {
     return (
       <EmptyState
         suggestions={props.suggestions ?? []}
+        composerEngaged={props.composerEngaged}
         emptyState={props.emptyState}
         liveStatus={props.liveStatus}
         onSuggestionSelect={props.onSuggestionSelect}

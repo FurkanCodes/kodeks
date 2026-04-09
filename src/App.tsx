@@ -6,7 +6,12 @@ import {
   type DiffLineView,
   type DrawerMode,
 } from './components/shell/InspectorPanel'
-import { MessageTimeline, type ChatActivityTrace, type ChatMessage } from './components/shell/MessageTimeline'
+import {
+  MessageTimeline,
+  type ChatActivityTrace,
+  type ChatMessage,
+  type QuickStartSuggestion,
+} from './components/shell/MessageTimeline'
 import {
   SettingsModal,
   type SettingsSection,
@@ -115,11 +120,31 @@ const EMPTY_SNAPSHOT: Snapshot = {
   active_diff: null,
 }
 
-const PROMPT_SUGGESTIONS = [
-  'Review the current diff and call out risky changes',
-  'Plan the next edit in this project',
-  'Find the best entrypoint for a new feature',
-  'Inspect runtime warnings and tell me what matters',
+const PROMPT_SUGGESTIONS: QuickStartSuggestion[] = [
+  {
+    kind: 'review',
+    title: 'Review current diff',
+    detail: 'Call out risky changes before you merge or keep coding.',
+    prompt: 'Review the current diff and call out risky changes',
+  },
+  {
+    kind: 'plan',
+    title: 'Plan next edit',
+    detail: 'Break the next change into an efficient, reviewable move.',
+    prompt: 'Plan the next edit in this project',
+  },
+  {
+    kind: 'explore',
+    title: 'Find feature entrypoint',
+    detail: 'Trace the best file or component to start from in this repo.',
+    prompt: 'Find the best entrypoint for a new feature',
+  },
+  {
+    kind: 'diagnose',
+    title: 'Inspect warnings',
+    detail: 'Surface the runtime issues that matter and what to do next.',
+    prompt: 'Inspect runtime warnings and tell me what matters',
+  },
 ]
 
 type ParsedDiffLine = {
@@ -177,6 +202,7 @@ function App() {
   const [selectedPermissionPreset, setSelectedPermissionPreset] = useState<PermissionPreset>('default')
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([])
   const [composerAttachments, setComposerAttachments] = useState<ComposerImageAttachment[]>([])
+  const [composerEngaged, setComposerEngaged] = useState(false)
   const [composerResetToken, setComposerResetToken] = useState(0)
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -243,8 +269,9 @@ function App() {
       activeProjectViewRoot
         ? {
             eyebrow: 'Project',
-            title: activeProjectLabel,
-            description: 'Start a new conversation here. Your first message creates a thread and keeps file suggestions anchored to this repo.',
+            title: 'Start a new thread',
+            projectLabel: activeProjectLabel,
+            description: 'Ask Kodeks to inspect, plan, or change this repo. Your first message creates the thread automatically.',
             projectPath: currentProjectRoot,
           }
         : undefined,
@@ -1290,6 +1317,7 @@ function App() {
               messages={shellMessagesValue}
               suggestions={PROMPT_SUGGESTIONS}
               emptyState={activeProjectEmptyState}
+              composerEngaged={composerEngaged}
               liveStatus={liveStatus}
               focusedMessageId={focusedMessageId}
               scrollContainerRef={scrollContainerRef}
@@ -1321,6 +1349,7 @@ function App() {
             onOpenProjectPicker={() => void handleAddProject()}
             onPasteImages={(files) => void handlePasteComposerImages(files)}
             onRemoveAttachment={handleRemoveComposerAttachment}
+            onComposingChange={setComposerEngaged}
             onSubmit={(content) => void handleSend(content)}
             onInterrupt={() => void handleInterruptTurn()}
             onSelectModel={handleModelChange}

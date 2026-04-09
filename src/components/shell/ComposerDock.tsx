@@ -50,6 +50,7 @@ type ComposerDockProps = {
   onOpenProjectPicker: () => void
   onPasteImages: (files: File[]) => void
   onRemoveAttachment: (id: string) => void
+  onComposingChange: (active: boolean) => void
   onSubmit: (prompt: string) => void
   onInterrupt: () => void
   onSelectModel: (model: string) => void
@@ -117,11 +118,16 @@ export function ComposerDock(props: ComposerDockProps) {
       .slice(0, 6 - basenameMatches.length)
     return [...basenameMatches, ...pathMatches]
   }, [deferredPrompt, props.workspaceFiles])
+  const isComposing = draftPrompt.trim().length > 0 || props.attachments.length > 0
   const canSubmit = props.authenticated && (draftPrompt.trim().length > 0 || props.attachments.length > 0)
 
   useEffect(() => {
     setDraftPrompt('')
   }, [props.clearToken])
+
+  useEffect(() => {
+    props.onComposingChange(isComposing)
+  }, [isComposing, props.onComposingChange])
 
   useEffect(() => {
     if (!textareaRef.current) {
