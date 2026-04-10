@@ -6,6 +6,7 @@ export type SidebarThread = {
   label: string
   active: boolean
   live: boolean
+  accountTag?: string | null
 }
 
 export type SidebarGroup = {
@@ -34,6 +35,8 @@ export function buildSidebarGroups(
   activeThreadId: string | null,
   expanded: Record<string, boolean>,
   activeTurnId: string | null,
+  activeAccountId: string | null,
+  savedAccountCount: number,
 ): SidebarGroup[] {
   const buckets = new Map<string, SidebarGroup>()
   const projectMap = new Map(store.projects.map((project) => [project.rootPath, project]))
@@ -86,6 +89,7 @@ export function buildSidebarGroups(
       label: thread.name || thread.preview || 'Untitled thread',
       active: thread.id === activeThreadId,
       live: Boolean(activeTurnId) && thread.id === activeThreadId,
+      accountTag: threadAccountTag(thread, activeAccountId, savedAccountCount),
     })
   }
 
@@ -118,6 +122,26 @@ export function buildSidebarGroups(
     })
   }
   return groups
+}
+
+function threadAccountTag(
+  thread: Snapshot['threads'][number],
+  activeAccountId: string | null,
+  savedAccountCount: number,
+) {
+  if (savedAccountCount <= 1 || !activeAccountId || !thread.last_account_id) {
+    return null
+  }
+
+  if (thread.last_account_id === activeAccountId) {
+    return null
+  }
+
+  return (
+    thread.last_account_label ||
+    (thread.last_account_plan ? titleCase(thread.last_account_plan) : null) ||
+    'Other account'
+  )
 }
 
 export function resolveWorkspaceReference(token: string, workspaceFiles: string[]) {
@@ -168,4 +192,10 @@ function tailPath(value: string | null | undefined) {
     .split('/')
     .filter(Boolean)
   return parts[parts.length - 1] || ''
+}
+
+function titleCase(value: string) {
+  return value
+    .replace(/[-_]/g, ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase())
 }

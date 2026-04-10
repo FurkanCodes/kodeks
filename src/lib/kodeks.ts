@@ -20,6 +20,8 @@ export type Snapshot = {
     plan?: string | null
     rate_limit_summary?: string | null
     rate_limits?: RateLimitsView | null
+    active_account_id?: string | null
+    accounts: SavedAccountView[]
     requires_openai_auth: boolean
     login_in_progress: boolean
     login_id?: string | null
@@ -61,7 +63,24 @@ export type Snapshot = {
 
 export type RateLimitsView = {
   plan?: string | null
+  credits?: CreditsView | null
   buckets: RateLimitBucketView[]
+}
+
+export type CreditsView = {
+  has_credits: boolean
+  unlimited: boolean
+  balance?: string | null
+}
+
+export type SavedAccountView = {
+  id: string
+  mode: string
+  label: string
+  plan?: string | null
+  state: string
+  is_active: boolean
+  last_used_at?: number | null
 }
 
 export type RateLimitBucketView = {
@@ -87,6 +106,9 @@ export type ThreadSummary = {
   branch?: string | null
   presence: string
   turn_count: number
+  last_account_id?: string | null
+  last_account_label?: string | null
+  last_account_plan?: string | null
 }
 
 export type TimelineEntry = {
@@ -235,6 +257,14 @@ export async function logout() {
   return invoke<Snapshot>('logout')
 }
 
+export async function selectAccount(accountId: string) {
+  return invoke<Snapshot>('select_account', { accountId })
+}
+
+export async function disconnectAccount(accountId: string) {
+  return invoke<Snapshot>('disconnect_account', { accountId })
+}
+
 export async function resolveApproval(requestId: string, decision: string) {
   return invoke<Snapshot>('resolve_approval', { requestId, decision })
 }
@@ -265,6 +295,10 @@ export async function readWorkspaceFile(baseDir: string, relativePath: string) {
 
 export async function openWorkspaceFile(baseDir: string, relativePath: string) {
   return invoke<void>('open_workspace_file', { baseDir, relativePath })
+}
+
+export async function openExternalUrl(url: string) {
+  return invoke<void>('open_external_url', { url })
 }
 
 export async function savePastedImage(bytes: number[], mimeType?: string | null) {

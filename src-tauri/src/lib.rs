@@ -243,6 +243,30 @@ async fn logout(state: State<'_, DesktopState>) -> Result<SessionSnapshot, Strin
 }
 
 #[tauri::command]
+async fn select_account(
+    state: State<'_, DesktopState>,
+    account_id: String,
+) -> Result<SessionSnapshot, String> {
+    state
+        .runtime
+        .select_account(account_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn disconnect_account(
+    state: State<'_, DesktopState>,
+    account_id: String,
+) -> Result<SessionSnapshot, String> {
+    state
+        .runtime
+        .disconnect_account(account_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn resolve_approval(
     state: State<'_, DesktopState>,
     request_id: String,
@@ -293,6 +317,15 @@ async fn open_workspace_file(base_dir: String, relative_path: String) -> Result<
     let resolved =
         resolve_workspace_path(&base_dir, &relative_path).map_err(|error| error.to_string())?;
     open_in_system_editor(&resolved).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("only http/https URLs are supported".to_string());
+    }
+    open_external_target(trimmed).map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -360,7 +393,12 @@ pub fn run() {
         .setup(|app| {
             let single_instance = SingleInstanceGuard::acquire_for_current_session()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
-            let runtime = RuntimeHandle::new();
+            let account_storage_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| std::io::Error::other(error.to_string()))?
+                .join("account-vault");
+            let runtime = RuntimeHandle::new(account_storage_dir);
             let app_handle = app.handle().clone();
             let mut snapshot_rx = runtime.subscribe();
 
@@ -399,6 +437,8 @@ pub fn run() {
             login_api_key,
             cancel_login,
             logout,
+            select_account,
+            disconnect_account,
             resolve_approval,
             archive_thread,
             unarchive_thread,
@@ -407,6 +447,7 @@ pub fn run() {
             list_workspace_files,
             read_workspace_file,
             open_workspace_file,
+            open_external_url,
             save_pasted_image,
         ])
         .run(tauri::generate_context!())
@@ -466,6 +507,34 @@ fn open_in_system_editor(path: &PathBuf) -> AnyhowResult<()> {
     command
         .spawn()
         .with_context(|| format!("failed to open {}", path.display()))?;
+    Ok(())
+}
+
+fn open_external_target(target: &str) -> AnyhowResult<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(target);
+        command
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", target]);
+        command
+    };
+
+    command
+        .spawn()
+        .with_context(|| format!("failed to open external target {target}"))?;
     Ok(())
 }
 

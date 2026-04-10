@@ -11,6 +11,7 @@ import {
   TerminalIcon,
   UserIcon,
 } from './icons'
+import { LoadingSpinner } from './LoadingSpinner'
 
 export type SettingsSectionKey =
   | 'general'
@@ -56,6 +57,34 @@ export type SettingsRow =
       colors: string[]
       selected?: string
       onSelect?: (value: string) => void
+    }
+  | {
+      kind: 'accounts'
+      label: string
+      description: string
+      accounts: {
+        id: string
+        label: string
+        planLabel: string
+        stateLabel: string
+        isActive: boolean
+        manageable: boolean
+        lastUsedLabel?: string | null
+        switching?: boolean
+        actionsDisabled?: boolean
+      }[]
+      emptyMessage: string
+      loginInProgress: boolean
+      switchInProgress: boolean
+      switchingAccountLabel?: string | null
+      authNotice?: string | null
+      authUrl?: string | null
+      authCode?: string | null
+      loginError?: string | null
+      onAddChatgptAccount?: () => void
+      onOpenAuthUrl?: (url: string) => void
+      onSelectAccount?: (accountId: string) => void
+      onDisconnectAccount?: (accountId: string) => void
     }
   | {
       kind: 'rateLimits'
@@ -154,6 +183,135 @@ function rateLimitToneDotClass(tone: 'calm' | 'warning' | 'muted') {
 function SettingRowView(props: { row: SettingsRow }) {
   const row = props.row
 
+  if (row.kind === 'accounts') {
+    return (
+      <section className="overflow-hidden rounded-[16px] border border-white/5 bg-[color:var(--color-shell-elevated)]">
+        <div className="px-4 py-4">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-neutral-500">
+            {row.label}
+          </div>
+          <div className="mb-3 text-[12px] leading-relaxed text-neutral-400">{row.description}</div>
+          {row.accounts.length > 0 ? (
+            <div className="divide-y divide-white/5">
+              {row.accounts.map((account) => (
+                <div key={account.id} className="flex items-center justify-between gap-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="truncate text-[13px] font-medium tracking-[-0.012em] text-neutral-200">
+                      {account.label}
+                    </div>
+                    <div className="truncate text-[11.5px] text-neutral-500">
+                      {account.planLabel}
+                      {account.stateLabel ? ` • ${account.stateLabel}` : ''}
+                      {account.lastUsedLabel ? ` • ${account.lastUsedLabel}` : ''}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {account.switching ? (
+                      <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.08em] text-neutral-300">
+                        <LoadingSpinner size={11} strokeWidth={1.35} />
+                        <span>Switching...</span>
+                      </span>
+                    ) : account.isActive ? (
+                      <span className="text-[10px] uppercase tracking-[0.08em] text-neutral-400">
+                        Current
+                      </span>
+                    ) : account.manageable ? (
+                      <button
+                        type="button"
+                        className={`rounded-[6px] border px-2 py-1 text-[11px] transition ${
+                          account.actionsDisabled
+                            ? 'cursor-not-allowed border-white/8 text-neutral-500'
+                            : 'border-white/10 text-neutral-300 hover:border-white/20 hover:text-white'
+                        }`}
+                        onClick={() => {
+                          console.info('[kodeks-account-ui] settings switch click', {
+                            requestedAccountId: account.id,
+                            label: account.label,
+                          })
+                          row.onSelectAccount?.(account.id)
+                        }}
+                        disabled={account.actionsDisabled}
+                      >
+                        {account.switching ? 'Switching...' : 'Switch'}
+                      </button>
+                    ) : null}
+                    {account.manageable ? (
+                      <button
+                        type="button"
+                        className={`rounded-[6px] border px-2 py-1 text-[11px] transition ${
+                          account.actionsDisabled
+                            ? 'cursor-not-allowed border-white/8 text-neutral-500'
+                            : 'border-red-300/20 text-red-200/80 hover:bg-red-500/10 hover:text-red-100'
+                        }`}
+                        onClick={() => row.onDisconnectAccount?.(account.id)}
+                        disabled={account.actionsDisabled}
+                      >
+                        Disconnect
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-[13px] text-neutral-400">{row.emptyMessage}</div>
+          )}
+        </div>
+
+        <div className="border-t border-white/5 px-4 py-3.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className={`rounded-[6px] border px-2.5 py-1 text-[11px] font-medium transition ${
+                row.loginInProgress || row.switchInProgress
+                  ? 'cursor-not-allowed border-white/8 text-neutral-500'
+                  : 'border-white/10 text-neutral-300 hover:border-white/20 hover:text-white'
+              }`}
+              onClick={() => row.onAddChatgptAccount?.()}
+              disabled={row.loginInProgress || row.switchInProgress}
+            >
+              {row.switchInProgress
+                ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <LoadingSpinner size={12} strokeWidth={1.4} />
+                      <span>Switching to {row.switchingAccountLabel || 'account'}...</span>
+                    </span>
+                  )
+                : row.loginInProgress
+                  ? 'Adding account...'
+                  : 'Add ChatGPT account'}
+            </button>
+          </div>
+
+          {row.authNotice ? (
+            <div className="mt-2 rounded-[10px] bg-white/[0.03] px-3 py-2 text-[11.5px] leading-relaxed text-neutral-400">
+              {row.authNotice}
+            </div>
+          ) : null}
+          {row.authCode ? (
+            <div className="mt-2 rounded-[10px] bg-white/[0.03] px-3 py-2 text-[11.5px] text-neutral-300">
+              Code: <span className="shell-menlo">{row.authCode}</span>
+            </div>
+          ) : null}
+          {row.authUrl ? (
+            <button
+              type="button"
+              className="mt-2 inline-flex text-[11.5px] text-neutral-400 underline-offset-2 transition hover:text-neutral-200 hover:underline"
+              onClick={() => row.onOpenAuthUrl?.(row.authUrl!)}
+            >
+              Open sign-in link
+            </button>
+          ) : null}
+          {row.loginError ? (
+            <div className="mt-2 rounded-[10px] bg-red-500/8 px-3 py-2 text-[11.5px] text-red-200/90">
+              {row.loginError}
+            </div>
+          ) : null}
+        </div>
+      </section>
+    )
+  }
+
   if (row.kind === 'rateLimits') {
     return (
       <section className="overflow-hidden rounded-[16px] border border-white/5 bg-[color:var(--color-shell-elevated)]">
@@ -168,6 +326,7 @@ function SettingRowView(props: { row: SettingsRow }) {
                 </span>
               ) : null}
             </div>
+            <div className="mt-1.5 text-[12px] leading-relaxed text-neutral-400">{row.description}</div>
           </div>
 
           <div className="flex items-center gap-3 md:pl-4">

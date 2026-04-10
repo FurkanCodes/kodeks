@@ -1,3 +1,4 @@
+mod account_vault;
 mod model;
 mod runtime;
 

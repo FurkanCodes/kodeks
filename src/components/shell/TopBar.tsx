@@ -15,6 +15,7 @@ export type TopBarRunState = 'idle' | 'running' | 'done'
 type TopBarProps = {
   title: string
   isMacOs: boolean
+  minimal?: boolean
   sidebarCollapsed: boolean
   canGoBack: boolean
   canGoForward: boolean
@@ -154,6 +155,22 @@ function DragRegion(props: {
 
 export function TopBar(props: TopBarProps) {
   const SidebarToggleIcon = props.sidebarCollapsed ? SidebarExpandIcon : SidebarCollapseIcon
+
+  if (props.minimal) {
+    return (
+      <header className="flex h-10 shrink-0 items-center bg-[#111114]/95 px-3 text-neutral-200 backdrop-blur-[12px]">
+        {props.isMacOs ? <DragRegion enabled className="h-full w-[84px] shrink-0" /> : null}
+        <DragRegion
+          enabled={props.isMacOs}
+          className={`min-w-0 flex-1 select-none ${props.isMacOs ? 'ml-3' : ''}`}
+        >
+          <span className="block truncate text-[13px] font-medium tracking-[-0.02em] text-neutral-200">
+            {props.title}
+          </span>
+        </DragRegion>
+      </header>
+    )
+  }
 
   return (
     <header className="flex h-10 shrink-0 items-center justify-between bg-[#111114]/95 px-3 text-neutral-200 backdrop-blur-[12px]">

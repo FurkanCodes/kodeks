@@ -11,9 +11,12 @@ use kodeks_protocol::{
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::account_vault::{LocalAccountVault, StoredAccountCredential};
 use crate::model::{
-    AccountRateLimitBucket, AccountRateLimits, AccountSnapshot, ApprovalEntry, DiagnosticTrace,
-    DiagnosticWarning, DiffSnapshot, MetadataRow, ModelOption, ReasoningEffortOption,
+    AccountCredits, AccountRateLimitBucket, AccountRateLimits, AccountSnapshot, ApprovalEntry,
+    DiagnosticTrace, DiagnosticWarning, DiffSnapshot, MetadataRow, ModelOption,
+    ReasoningEffortOption,
+    SavedAccountView,
     SessionSnapshot, ThreadConfigOverride, ThreadSummary, TimelineAttachment, TimelineEntry,
     TimelineFileChange, UserInputItem,
 };
@@ -26,6 +29,8 @@ const TIMELINE_CAP: usize = 240;
 const APPROVAL_CAP: usize = 80;
 const STREAM_PUBLISH_INTERVAL: Duration = Duration::from_millis(40);
 const THREAD_PAGE_SIZE: usize = 40;
+const ACCOUNT_SWITCH_REFRESH_ATTEMPTS: usize = 10;
+const ACCOUNT_SWITCH_REFRESH_DELAY: Duration = Duration::from_millis(200);
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
@@ -34,10 +39,10 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
-    pub fn new() -> Self {
+    pub fn new(storage_dir: PathBuf) -> Self {
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (snapshot_tx, snapshot_rx) = watch::channel(SessionSnapshot::default());
-        let controller = Controller::new(control_rx, snapshot_tx);
+        let controller = Controller::new(control_rx, snapshot_tx, storage_dir);
 
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -172,6 +177,18 @@ impl RuntimeHandle {
 
     pub async fn logout(&self) -> Result<SessionSnapshot> {
         self.send(ControlMessageKind::Logout)
+            .await
+            .and_then(expect_snapshot)
+    }
+
+    pub async fn select_account(&self, account_id: String) -> Result<SessionSnapshot> {
+        self.send(ControlMessageKind::SelectAccount { account_id })
+            .await
+            .and_then(expect_snapshot)
+    }
+
+    pub async fn disconnect_account(&self, account_id: String) -> Result<SessionSnapshot> {
+        self.send(ControlMessageKind::DisconnectAccount { account_id })
             .await
             .and_then(expect_snapshot)
     }
@@ -338,6 +355,12 @@ enum ControlMessageKind {
     },
     CancelLogin,
     Logout,
+    SelectAccount {
+        account_id: String,
+    },
+    DisconnectAccount {
+        account_id: String,
+    },
     ResolveApproval {
         request_id: String,
         decision: String,
@@ -363,6 +386,7 @@ struct PendingServerRequest {
 }
 
 struct Controller {
+    vault: LocalAccountVault,
     snapshot: SessionSnapshot,
     snapshot_tx: watch::Sender<SessionSnapshot>,
     control_rx: mpsc::UnboundedReceiver<ControlMessage>,
@@ -377,14 +401,17 @@ struct Controller {
     warning_ring: VecDeque<DiagnosticWarning>,
     last_stream_publish_at: Option<Instant>,
     auto_recovery_attempted_since_ready: bool,
+    pending_saved_account_switch_id: Option<String>,
 }
 
 impl Controller {
     fn new(
         control_rx: mpsc::UnboundedReceiver<ControlMessage>,
         snapshot_tx: watch::Sender<SessionSnapshot>,
+        storage_dir: PathBuf,
     ) -> Self {
         Self {
+            vault: LocalAccountVault::new(storage_dir),
             snapshot: SessionSnapshot::default(),
             snapshot_tx,
             control_rx,
@@ -399,6 +426,7 @@ impl Controller {
             warning_ring: VecDeque::new(),
             last_stream_publish_at: None,
             auto_recovery_attempted_since_ready: false,
+            pending_saved_account_switch_id: None,
         }
     }
 
@@ -454,7 +482,9 @@ impl Controller {
                 "initialize",
                 Some(json!({
                     "clientInfo": { "name": "Kodeks", "version": env!("CARGO_PKG_VERSION") },
-                    "capabilities": null,
+                    "capabilities": {
+                        "experimentalApi": true,
+                    },
                 })),
             )
             .await?;
@@ -462,6 +492,15 @@ impl Controller {
         app_server.notify("initialized", None)?;
 
         self.refresh_account().await?;
+        if let Err(error) = self.capture_current_chatgpt_account(false).await {
+            self.add_warning(
+                "Could not save the current ChatGPT account".to_string(),
+                Some(error.to_string()),
+            );
+        }
+        if self.snapshot.account.status != "authenticated" {
+            let _ = self.restore_saved_account_session().await;
+        }
         let _ = self.refresh_rate_limits().await;
         self.refresh_threads(true).await?;
         self.auto_recovery_attempted_since_ready = false;
@@ -538,6 +577,14 @@ impl Controller {
                 self.logout().await?;
                 Ok(ControlResponse::Snapshot(self.snapshot.clone()))
             }
+            ControlMessageKind::SelectAccount { account_id } => {
+                self.select_account(account_id).await?;
+                Ok(ControlResponse::Snapshot(self.snapshot.clone()))
+            }
+            ControlMessageKind::DisconnectAccount { account_id } => {
+                self.disconnect_account(account_id).await?;
+                Ok(ControlResponse::Snapshot(self.snapshot.clone()))
+            }
             ControlMessageKind::ResolveApproval {
                 request_id,
                 decision,
@@ -590,7 +637,106 @@ impl Controller {
             .request("account/read", Some(json!({ "refreshToken": false })))
             .await?;
         self.apply_account_response(&response);
+        self.sync_snapshot_saved_accounts();
         Ok(())
+    }
+
+    async fn refresh_account_state(&mut self) -> Result<()> {
+        self.refresh_account().await?;
+        let _ = self.refresh_rate_limits().await;
+        Ok(())
+    }
+
+    async fn refresh_account_state_for_switch(
+        &mut self,
+        target_account_id: &str,
+        target_runtime_account_id: Option<&str>,
+        target_label: Option<&str>,
+    ) -> Result<()> {
+        self.trace_account_event(
+            "switch.refresh.start",
+            json!({
+                "targetAccountId": target_account_id,
+                "targetRuntimeAccountId": target_runtime_account_id,
+                "targetLabel": target_label,
+                "attemptLimit": ACCOUNT_SWITCH_REFRESH_ATTEMPTS,
+            }),
+        );
+        let mut last_error = None;
+
+        for attempt in 0..ACCOUNT_SWITCH_REFRESH_ATTEMPTS {
+            match self.refresh_account_state().await {
+                Ok(()) => {
+                    let matched = self.snapshot_matches_account_target(
+                        target_account_id,
+                        target_runtime_account_id,
+                        target_label,
+                    );
+                    self.trace_account_event(
+                        "switch.refresh.attempt",
+                        json!({
+                            "attempt": attempt + 1,
+                            "targetAccountId": target_account_id,
+                            "targetRuntimeAccountId": target_runtime_account_id,
+                            "targetLabel": target_label,
+                            "matched": matched,
+                        }),
+                    );
+                    if matched {
+                        self.trace_account_event(
+                            "switch.refresh.settled",
+                            json!({
+                                "attempt": attempt + 1,
+                                "targetAccountId": target_account_id,
+                            }),
+                        );
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    self.trace_account_event(
+                        "switch.refresh.attempt_failed",
+                        json!({
+                            "attempt": attempt + 1,
+                            "targetAccountId": target_account_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    last_error = Some(error);
+                }
+            }
+
+            if attempt + 1 < ACCOUNT_SWITCH_REFRESH_ATTEMPTS {
+                tokio::time::sleep(ACCOUNT_SWITCH_REFRESH_DELAY).await;
+            }
+        }
+
+        if let Some(error) = last_error {
+            self.trace_account_event(
+                "switch.refresh.failed",
+                json!({
+                    "targetAccountId": target_account_id,
+                    "targetRuntimeAccountId": target_runtime_account_id,
+                    "targetLabel": target_label,
+                    "error": error.to_string(),
+                }),
+            );
+            return Err(error);
+        }
+
+        let expected = target_label.unwrap_or(target_account_id);
+        self.trace_account_event(
+            "switch.refresh.failed",
+            json!({
+                "targetAccountId": target_account_id,
+                "targetRuntimeAccountId": target_runtime_account_id,
+                "targetLabel": target_label,
+                "error": format!("account switch did not settle on {expected}"),
+            }),
+        );
+        Err(anyhow!(
+            "account switch did not settle on {expected}"
+        ))
     }
 
     async fn refresh_rate_limits(&mut self) -> Result<()> {
@@ -621,6 +767,410 @@ impl Controller {
 
         self.publish_snapshot();
         Ok(())
+    }
+
+    async fn restore_saved_account_session(&mut self) -> Result<()> {
+        let active_id = self.vault.get_active_account_id()?;
+        let fallback_id = self
+            .vault
+            .list_accounts()?
+            .into_iter()
+            .filter(|account| account.state == "connected")
+            .max_by_key(|account| account.last_used_at.unwrap_or_default())
+            .map(|account| account.id);
+
+        let target_id = active_id.or(fallback_id);
+        let Some(target_id) = target_id else {
+            self.trace_account_event(
+                "saved.restore.skipped",
+                json!({
+                    "reason": "no saved account available to restore",
+                }),
+            );
+            self.sync_snapshot_saved_accounts();
+            return Ok(());
+        };
+        self.trace_account_event(
+            "saved.restore.start",
+            json!({
+                "targetAccountId": target_id,
+            }),
+        );
+        let Some(stored) = self.vault.get_credential(&target_id)? else {
+            self.trace_account_event(
+                "saved.restore.missing_token",
+                json!({
+                    "targetAccountId": target_id,
+                }),
+            );
+            let _ = self.vault.mark_state(&target_id, "reauth required");
+            self.sync_snapshot_saved_accounts();
+            return Ok(());
+        };
+
+        if let Err(error) = self.login_with_saved_account(&stored).await {
+            self.trace_account_event(
+                "saved.restore.failed",
+                json!({
+                    "targetAccountId": target_id,
+                    "error": error.to_string(),
+                }),
+            );
+            self.handle_saved_account_failure(
+                &target_id,
+                &error,
+                "Saved account needs to sign in again".to_string(),
+            );
+        } else {
+            self.trace_account_event(
+                "saved.restore.succeeded",
+                json!({
+                    "targetAccountId": target_id,
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    async fn login_with_saved_account(
+        &mut self,
+        stored: &StoredAccountCredential,
+    ) -> Result<()> {
+        let app_server = self.app_server()?;
+        let account_id = stored.account.id.clone();
+        let access_token = stored.access_token.clone();
+        let chatgpt_account_id = stored.account.chatgpt_account_id.clone();
+        let chatgpt_plan_type = stored.account.plan.clone();
+        let label = stored.account.label.clone();
+
+        self.trace_account_event(
+            "saved.switch.login.start",
+            json!({
+                "targetAccountId": account_id,
+                "targetRuntimeAccountId": chatgpt_account_id,
+                "targetLabel": label,
+                "targetPlan": chatgpt_plan_type,
+                "accessTokenPresent": !access_token.trim().is_empty(),
+            }),
+        );
+        self.pending_saved_account_switch_id = Some(account_id.clone());
+        let login_result = async {
+            app_server
+                .request(
+                    "account/login/start",
+                    Some(json!({
+                        "type": "chatgptAuthTokens",
+                        "accessToken": access_token,
+                        "chatgptAccountId": chatgpt_account_id,
+                        "chatgptPlanType": chatgpt_plan_type,
+                    })),
+                )
+                .await?;
+
+            self.trace_account_event(
+                "saved.switch.login.request_completed",
+                json!({
+                    "targetAccountId": account_id,
+                }),
+            );
+            self.vault.mark_state(&account_id, "connected")?;
+            self.vault.set_active_account(&account_id)?;
+            self.refresh_account_state_for_switch(
+                &account_id,
+                Some(stored.account.chatgpt_account_id.as_str()),
+                Some(stored.account.label.as_str()),
+            )
+            .await
+        }
+        .await;
+        self.pending_saved_account_switch_id = None;
+        match &login_result {
+            Ok(()) => self.trace_account_event(
+                "saved.switch.login.succeeded",
+                json!({
+                    "targetAccountId": account_id,
+                }),
+            ),
+            Err(error) => self.trace_account_event(
+                "saved.switch.login.failed",
+                json!({
+                    "targetAccountId": account_id,
+                    "error": error.to_string(),
+                }),
+            ),
+        }
+        login_result
+    }
+
+    async fn capture_current_chatgpt_account(&mut self, refresh_token: bool) -> Result<()> {
+        self.trace_account_event(
+            "capture.current.start",
+            json!({
+                "refreshRequested": refresh_token,
+            }),
+        );
+        if self.snapshot.account.status != "authenticated" {
+            self.trace_account_event(
+                "capture.current.skipped",
+                json!({
+                    "refreshRequested": refresh_token,
+                    "reason": "snapshot is not authenticated",
+                }),
+            );
+            return Ok(());
+        }
+
+        if self.snapshot.account.mode != "chatgpt" && self.snapshot.account.mode != "chatgptAuthTokens"
+        {
+            self.trace_account_event(
+                "capture.current.skipped",
+                json!({
+                    "refreshRequested": refresh_token,
+                    "reason": "snapshot mode is not ChatGPT-backed",
+                }),
+            );
+            return Ok(());
+        }
+
+        let active_id = self
+            .snapshot
+            .account
+            .active_account_id
+            .clone()
+            .context("active account id is unavailable")?;
+        let label = self
+            .snapshot
+            .account
+            .identity
+            .clone()
+            .context("active account identity is unavailable")?;
+        let auth_status = self.read_auth_status(refresh_token).await?;
+        let has_auth_token = auth_status
+            .get("authToken")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|token| !token.is_empty());
+        self.trace_account_event(
+            "capture.current.auth_status",
+            json!({
+                "refreshRequested": refresh_token,
+                "accountId": active_id,
+                "label": label,
+                "hasAuthToken": has_auth_token,
+            }),
+        );
+        let access_token = auth_status
+            .get("authToken")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .context("active account token is unavailable")?;
+
+        self.vault.upsert_chatgpt_account(
+            &active_id,
+            &label,
+            self.snapshot.account.plan.as_deref(),
+            &active_id,
+            access_token,
+        )?;
+        self.vault.set_active_account(&active_id)?;
+        self.sync_snapshot_saved_accounts();
+        self.trace_account_event(
+            "capture.current.saved",
+            json!({
+                "accountId": active_id,
+                "label": label,
+            }),
+        );
+        Ok(())
+    }
+
+    async fn read_auth_status(&self, refresh_token: bool) -> Result<Value> {
+        let app_server = self.app_server()?;
+        app_server
+            .request(
+                "getAuthStatus",
+                Some(json!({
+                    "includeToken": true,
+                    "refreshToken": refresh_token,
+                })),
+            )
+            .await
+    }
+
+    async fn handle_chatgpt_token_refresh(
+        &mut self,
+        id: RequestIdValue,
+        params: Value,
+    ) -> Result<()> {
+        let hints = self.saved_account_refresh_hints(&params);
+        self.trace_account_event(
+            "token.refresh.requested",
+            json!({
+                "requestId": &id,
+                "hints": &hints,
+                "params": &params,
+            }),
+        );
+        let mut stored = None;
+        let mut resolved_hint = None;
+        for hint in hints {
+            if let Some(credential) = self.vault.get_credential_by_hint(&hint)? {
+                resolved_hint = Some(hint);
+                stored = Some(credential);
+                break;
+            }
+        }
+        if stored.is_none() {
+            self.trace_account_event(
+                "token.refresh.missing_credentials",
+                json!({
+                    "requestId": &id,
+                    "params": &params,
+                }),
+            );
+        }
+        let stored = stored.context("saved account credentials are unavailable for token refresh")?;
+        let account_id = stored.account.id.clone();
+        let app_server = self.app_server()?;
+        app_server.respond(
+            id,
+            json!({
+                "accessToken": stored.access_token,
+                "chatgptAccountId": stored.account.chatgpt_account_id,
+                "chatgptPlanType": stored.account.plan,
+            }),
+        )?;
+        self.trace_account_event(
+            "token.refresh.responded",
+            json!({
+                "accountId": account_id,
+                "resolvedHint": resolved_hint,
+                "chatgptAccountId": stored.account.chatgpt_account_id,
+                "plan": stored.account.plan,
+            }),
+        );
+        let _ = self.vault.mark_state(&account_id, "connected");
+        Ok(())
+    }
+
+    fn saved_account_refresh_hints(&self, params: &Value) -> Vec<String> {
+        let mut hints = Vec::new();
+
+        let mut push_hint = |value: Option<String>| {
+            let Some(value) = value else {
+                return;
+            };
+            let trimmed = value.trim();
+            if trimmed.is_empty() || hints.iter().any(|existing| existing == trimmed) {
+                return;
+            }
+            hints.push(trimmed.to_string());
+        };
+
+        push_hint(stringish_at(
+            params,
+            &["previousAccountId", "previous_account_id"],
+        ));
+        push_hint(self.pending_saved_account_switch_id.clone());
+        push_hint(self.snapshot.account.active_account_id.clone());
+        push_hint(self.vault.get_active_account_id().ok().flatten());
+
+        hints
+    }
+
+    fn resolve_saved_account_id_for_refresh(&self, params: &Value) -> Result<Option<String>> {
+        for hint in self.saved_account_refresh_hints(params) {
+            if let Some(account_id) = self.vault.resolve_account_id(&hint)? {
+                return Ok(Some(account_id));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn handle_saved_account_failure(
+        &mut self,
+        account_id: &str,
+        error: &anyhow::Error,
+        summary: String,
+    ) {
+        let requires_reauth = saved_account_error_requires_reauth(error);
+        self.trace_account_event(
+            "saved.account.failure",
+            json!({
+                "accountId": account_id,
+                "summary": &summary,
+                "error": error.to_string(),
+                "requiresReauth": requires_reauth,
+            }),
+        );
+        if requires_reauth {
+            let _ = self.vault.mark_state(account_id, "reauth required");
+        }
+
+        self.add_warning(summary, Some(error.to_string()));
+        self.sync_snapshot_saved_accounts();
+    }
+
+    fn sync_snapshot_saved_accounts(&mut self) {
+        let saved_accounts = match self.vault.list_account_views() {
+            Ok(accounts) => accounts,
+            Err(error) => {
+                self.add_warning(
+                    "Saved accounts are unavailable".to_string(),
+                    Some(error.to_string()),
+                );
+                return;
+            }
+        };
+
+        if saved_accounts.is_empty() {
+            return;
+        }
+
+        let vault_active_id = self.vault.get_active_account_id().ok().flatten();
+        let runtime_active_id = self.snapshot.account.active_account_id.clone();
+        let runtime_identity = self.snapshot.account.identity.clone();
+
+        let matched_active_id = if self.snapshot.account.status == "authenticated" {
+            runtime_active_id
+                .clone()
+                .and_then(|candidate| {
+                    saved_accounts
+                        .iter()
+                        .find(|account| account.id == candidate)
+                        .map(|account| account.id.clone())
+                })
+                .or_else(|| {
+                    runtime_identity.as_deref().and_then(|identity| {
+                        saved_accounts
+                            .iter()
+                            .find(|account| account.label == identity)
+                            .map(|account| account.id.clone())
+                    })
+                })
+        } else {
+            vault_active_id.clone()
+        };
+
+        self.snapshot.account.accounts = saved_accounts
+            .into_iter()
+            .map(|account| SavedAccountView {
+                is_active: matched_active_id
+                    .as_deref()
+                    .is_some_and(|active_id| account.id == active_id),
+                ..account
+            })
+            .collect();
+
+        if self.snapshot.account.status == "authenticated" {
+            if let Some(active_id) = matched_active_id {
+                self.snapshot.account.active_account_id = Some(active_id);
+            }
+        } else {
+            self.snapshot.account.active_account_id = vault_active_id;
+        }
     }
 
     async fn fetch_thread_list(&mut self, archived: bool) -> Result<Vec<ThreadSummary>> {
@@ -901,10 +1451,22 @@ impl Controller {
     }
 
     async fn login_chatgpt(&mut self) -> Result<()> {
+        if let Err(error) = self.capture_current_chatgpt_account(true).await {
+            self.add_warning(
+                "Could not save the current ChatGPT account before adding another one"
+                    .to_string(),
+                Some(error.to_string()),
+            );
+        }
         let app_server = self.app_server()?;
+        let has_saved_accounts = !self.snapshot.account.accounts.is_empty();
         self.snapshot.account.login_in_progress = true;
         self.snapshot.account.last_login_error = None;
-        self.snapshot.account.status = "authorizing".to_string();
+        self.snapshot.account.status = if has_saved_accounts {
+            "authenticated".to_string()
+        } else {
+            "authorizing".to_string()
+        };
         self.publish_snapshot();
         let response = app_server
             .request("account/login/start", Some(json!({ "type": "chatgpt" })))
@@ -914,10 +1476,22 @@ impl Controller {
     }
 
     async fn login_api_key(&mut self, api_key: String) -> Result<()> {
+        if let Err(error) = self.capture_current_chatgpt_account(true).await {
+            self.add_warning(
+                "Could not save the current ChatGPT account before switching auth modes"
+                    .to_string(),
+                Some(error.to_string()),
+            );
+        }
         let app_server = self.app_server()?;
+        let has_saved_accounts = !self.snapshot.account.accounts.is_empty();
         self.snapshot.account.login_in_progress = true;
         self.snapshot.account.last_login_error = None;
-        self.snapshot.account.status = "authorizing".to_string();
+        self.snapshot.account.status = if has_saved_accounts {
+            "authenticated".to_string()
+        } else {
+            "authorizing".to_string()
+        };
         self.publish_snapshot();
         let response = app_server
             .request(
@@ -962,10 +1536,140 @@ impl Controller {
     }
 
     async fn logout(&mut self) -> Result<()> {
+        let _ = self.capture_current_chatgpt_account(true).await;
         let app_server = self.app_server()?;
         let _ = app_server.request("account/logout", None).await?;
         self.refresh_account().await?;
         let _ = self.refresh_rate_limits().await;
+        let _ = self.refresh_threads(false).await;
+        self.publish_snapshot();
+        Ok(())
+    }
+
+    async fn select_account(&mut self, account_id: String) -> Result<()> {
+        self.trace_account_event(
+            "select_account.start",
+            json!({
+                "targetAccountId": account_id,
+            }),
+        );
+        let has_saved_account = self.vault.has_account(&account_id)?;
+        self.trace_account_event(
+            "select_account.lookup",
+            json!({
+                "targetAccountId": account_id,
+                "hasSavedAccount": has_saved_account,
+            }),
+        );
+        if has_saved_account {
+            let _ = self.capture_current_chatgpt_account(true).await;
+            let Some(stored) = self.vault.get_credential(&account_id)? else {
+                self.trace_account_event(
+                    "select_account.missing_token",
+                    json!({
+                        "targetAccountId": account_id,
+                    }),
+                );
+                let _ = self.vault.mark_state(&account_id, "reauth required");
+                self.sync_snapshot_saved_accounts();
+                return Err(anyhow!(
+                    "saved account is missing a stored token; add this account again to refresh it"
+                ));
+            };
+            if let Err(error) = self.login_with_saved_account(&stored).await {
+                self.handle_saved_account_failure(
+                    &account_id,
+                    &error,
+                    "Saved account switch failed".to_string(),
+                );
+                return Err(error);
+            }
+            self.trace_account_event(
+                "select_account.saved.succeeded",
+                json!({
+                    "targetAccountId": account_id,
+                }),
+            );
+            self.publish_snapshot();
+            return Ok(());
+        }
+
+        self.trace_account_event(
+            "select_account.runtime.requested",
+            json!({
+                "targetAccountId": account_id,
+            }),
+        );
+        let app_server = self.app_server()?;
+        let _ = app_server
+            .request("account/select", Some(json!({ "accountId": account_id })))
+            .await?;
+        self.refresh_account_state_for_switch(&account_id, None, None)
+            .await?;
+        self.trace_account_event(
+            "select_account.runtime.succeeded",
+            json!({
+                "targetAccountId": account_id,
+            }),
+        );
+        // Keep account switching snappy by avoiding a full thread reload on every switch.
+        // Thread/account attribution catches up on normal thread events and explicit refreshes.
+        self.publish_snapshot();
+        Ok(())
+    }
+
+    async fn disconnect_account(&mut self, account_id: String) -> Result<()> {
+        if self.vault.has_account(&account_id)? {
+            let active_account_id = self.snapshot.account.active_account_id.clone();
+            self.vault.remove_account(&account_id)?;
+
+            if active_account_id.as_deref() == Some(account_id.as_str()) {
+                if let Some(next_account) = self
+                    .vault
+                    .list_accounts()?
+                    .into_iter()
+                    .filter(|account| account.id != account_id && account.state == "connected")
+                    .max_by_key(|account| account.last_used_at.unwrap_or_default())
+                {
+                if let Some(credential) = self.vault.get_credential(&next_account.id)? {
+                    self.login_with_saved_account(&credential).await?;
+                } else {
+                        let app_server = self.app_server()?;
+                        let _ = app_server.request("account/logout", None).await?;
+                        self.refresh_account().await?;
+                    }
+                } else {
+                    let app_server = self.app_server()?;
+                    let _ = app_server.request("account/logout", None).await?;
+                    self.refresh_account().await?;
+                }
+            } else {
+                self.sync_snapshot_saved_accounts();
+            }
+
+            let _ = self.refresh_rate_limits().await;
+            let _ = self.refresh_threads(false).await;
+            if let Some(thread_id) = self.snapshot.active_thread_id.clone() {
+                let _ = self.read_thread(&thread_id).await.map(|thread| {
+                    self.apply_loaded_thread(&thread);
+                });
+            }
+            self.publish_snapshot();
+            return Ok(());
+        }
+
+        let app_server = self.app_server()?;
+        let _ = app_server
+            .request("account/disconnect", Some(json!({ "accountId": account_id })))
+            .await?;
+        self.refresh_account().await?;
+        let _ = self.refresh_rate_limits().await;
+        let _ = self.refresh_threads(false).await;
+        if let Some(thread_id) = self.snapshot.active_thread_id.clone() {
+            let _ = self.read_thread(&thread_id).await.map(|thread| {
+                self.apply_loaded_thread(&thread);
+            });
+        }
         self.publish_snapshot();
         Ok(())
     }
@@ -1031,12 +1735,46 @@ impl Controller {
                         Some(summarize_json(&params)),
                     ),
                     "account/updated" => {
-                        let _ = self.refresh_account().await;
+                        self.trace_account_event(
+                            "notification.account.updated",
+                            json!({
+                                "params": &params,
+                            }),
+                        );
+                        match self.refresh_account_state().await {
+                            Ok(()) => self.trace_account_event(
+                                "notification.account.updated.refreshed",
+                                json!({}),
+                            ),
+                            Err(error) => self.trace_account_event(
+                                "notification.account.updated.refresh_failed",
+                                json!({
+                                    "error": error.to_string(),
+                                }),
+                            ),
+                        }
                     }
                     "account/rateLimits/updated" => {
-                        self.apply_rate_limits_response(&params);
+                        let matches_active_account =
+                            self.rate_limit_notification_matches_active_account(&params);
+                        self.trace_account_event(
+                            "notification.rate_limits.updated",
+                            json!({
+                                "matchesActiveAccount": matches_active_account,
+                                "params": &params,
+                            }),
+                        );
+                        if matches_active_account {
+                            self.apply_rate_limits_response(&params);
+                        }
                     }
                     "account/login/completed" => {
+                        self.trace_account_event(
+                            "notification.account.login_completed",
+                            json!({
+                                "params": &params,
+                            }),
+                        );
                         self.snapshot.account.login_in_progress = false;
                         self.snapshot.account.login_id = None;
                         let success = params
@@ -1048,13 +1786,27 @@ impl Controller {
                                 .get("error")
                                 .and_then(Value::as_str)
                                 .map(str::to_string);
-                            self.snapshot.account.status = "unauthenticated".to_string();
+                            self.snapshot.account.status =
+                                if self.snapshot.account.accounts.is_empty() {
+                                    "unauthenticated".to_string()
+                                } else {
+                                    "authenticated".to_string()
+                                };
                             self.snapshot.account.auth_notice = None;
                             self.snapshot.account.auth_url = None;
                             self.snapshot.account.auth_code = None;
                         }
                         let _ = self.refresh_account().await;
                         let _ = self.refresh_rate_limits().await;
+                        if success {
+                            if let Err(error) = self.capture_current_chatgpt_account(true).await {
+                                self.add_warning(
+                                    "Could not save the newly signed-in ChatGPT account"
+                                        .to_string(),
+                                    Some(error.to_string()),
+                                );
+                            }
+                        }
                     }
                     "thread/started" => {
                         if let Some(thread) = params.get("thread") {
@@ -1208,7 +1960,25 @@ impl Controller {
             }
             ProtocolEvent::ServerRequest { id, method, params } => {
                 self.push_trace("in", format!("{method}: {}", summarize_json(&params)));
-                self.handle_server_request(id, method, params);
+                if method == "account/chatgptAuthTokens/refresh" {
+                    let refresh_target = self.resolve_saved_account_id_for_refresh(&params).ok().flatten();
+                    if let Err(error) = self.handle_chatgpt_token_refresh(id, params).await {
+                        if let Some(account_id) = refresh_target.as_deref() {
+                            self.handle_saved_account_failure(
+                                account_id,
+                                &error,
+                                "Saved account needs to sign in again".to_string(),
+                            );
+                        } else {
+                            self.add_warning(
+                                "Saved account needs to sign in again".to_string(),
+                                Some(error.to_string()),
+                            );
+                        }
+                    }
+                } else {
+                    self.handle_server_request(id, method, params);
+                }
             }
             ProtocolEvent::Stderr(line) => {
                 self.push_trace("stderr", line.clone());
@@ -1401,6 +2171,59 @@ impl Controller {
         }
     }
 
+    fn rate_limit_notification_matches_active_account(&self, value: &Value) -> bool {
+        let Some(account_id) = value
+            .get("accountId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|candidate| !candidate.is_empty())
+        else {
+            return true;
+        };
+
+        self.snapshot
+            .account
+            .active_account_id
+            .as_deref()
+            .map_or(true, |active| active == account_id)
+    }
+
+    fn snapshot_matches_account_target(
+        &self,
+        target_account_id: &str,
+        target_runtime_account_id: Option<&str>,
+        target_label: Option<&str>,
+    ) -> bool {
+        if self.snapshot.account.active_account_id.as_deref() == Some(target_account_id) {
+            return true;
+        }
+
+        if self
+            .snapshot
+            .account
+            .accounts
+            .iter()
+            .find(|account| account.is_active)
+            .is_some_and(|account| account.id == target_account_id)
+        {
+            return true;
+        }
+
+        if let Some(target_runtime_account_id) = target_runtime_account_id {
+            if self.snapshot.account.active_account_id.as_deref() == Some(target_runtime_account_id) {
+                return true;
+            }
+        }
+
+        if let Some(target_label) = target_label {
+            if self.snapshot.account.identity.as_deref() == Some(target_label) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn apply_loaded_thread(&mut self, thread: &Value) {
         let thread_id = thread.get("id").and_then(Value::as_str).map(str::to_string);
         self.upsert_thread_summary(thread);
@@ -1527,6 +2350,9 @@ impl Controller {
                 .and_then(Value::as_array)
                 .map(|turns| turns.len())
                 .unwrap_or_default(),
+            last_account_id: stringish_at(value, &["lastAccountId", "last_account_id"]),
+            last_account_label: stringish_at(value, &["lastAccountLabel", "last_account_label"]),
+            last_account_plan: stringish_at(value, &["lastAccountPlan", "last_account_plan"]),
         })
     }
 
@@ -1642,6 +2468,49 @@ impl Controller {
             self.trace_ring.pop_back();
         }
         self.snapshot.diagnostics.traces = self.trace_ring.iter().cloned().collect();
+    }
+
+    fn trace_account_event(&mut self, event: &str, details: Value) {
+        let payload = json!({
+            "event": event,
+            "details": details,
+            "context": {
+                "status": &self.snapshot.account.status,
+                "mode": &self.snapshot.account.mode,
+                "identity": self.snapshot.account.identity.clone(),
+                "plan": self.snapshot.account.plan.clone(),
+                "activeAccountId": self.snapshot.account.active_account_id.clone(),
+                "pendingSavedAccountSwitchId": self.pending_saved_account_switch_id.clone(),
+                "vaultActiveAccountId": self.vault.get_active_account_id().ok().flatten(),
+                "savedAccounts": self
+                    .snapshot
+                    .account
+                    .accounts
+                    .iter()
+                    .map(|account| {
+                        json!({
+                            "id": &account.id,
+                            "label": &account.label,
+                            "state": &account.state,
+                            "isActive": account.is_active,
+                            "plan": account.plan.clone(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                "rateLimits": self.snapshot.account.rate_limits.as_ref().map(|limits| {
+                    json!({
+                        "plan": limits.plan.clone(),
+                        "bucketCount": limits.buckets.len(),
+                        "hasCredits": limits.credits.as_ref().map(|credits| credits.has_credits),
+                        "unlimitedCredits": limits.credits.as_ref().map(|credits| credits.unlimited),
+                        "balance": limits.credits.as_ref().and_then(|credits| credits.balance.clone()),
+                    })
+                }),
+            },
+        });
+        let message = format!("{event}: {payload}");
+        eprintln!("[kodeks:acct] {}", sanitize_trace_message(&message));
+        self.push_trace("acct", message);
     }
 
     fn publish_snapshot(&mut self) {
@@ -1773,6 +2642,9 @@ fn fallback_thread_summary(thread_id: &str, cwd: &str) -> ThreadSummary {
         branch: None,
         presence: "live".to_string(),
         turn_count: 0,
+        last_account_id: None,
+        last_account_label: None,
+        last_account_plan: None,
     }
 }
 
@@ -1788,13 +2660,70 @@ fn format_thread_status(value: Option<&Value>) -> String {
     }
 }
 
+fn saved_account_error_requires_reauth(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+
+    [
+        "unauthorized",
+        "forbidden",
+        "reauth",
+        "re-auth",
+        "sign in again",
+        "sign-in again",
+        "login required",
+        "authentication failed",
+        "invalid token",
+        "expired token",
+        "token expired",
+        "missing a stored token",
+        "auth token is unavailable",
+        "saved account credentials are unavailable",
+        "missing local credentials",
+        " 401",
+        " 403",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
 fn build_account_snapshot(previous: &AccountSnapshot, value: &Value) -> AccountSnapshot {
     let account_value = value.get("account").filter(|account| !account.is_null());
-    let authenticated = account_value.is_some();
-    let rate_limits_payload = account_rate_limits_payload(account_value, value);
+    let reported_active_account_id = stringish_at(value, &["activeAccountId", "active_account_id"]);
+    let mut accounts =
+        collect_saved_accounts(value, reported_active_account_id.as_deref(), account_value);
+
+    let active_account_id = reported_active_account_id
+        .or_else(|| account_value.and_then(account_id))
+        .or_else(|| accounts.iter().find(|account| account.is_active).map(|account| account.id.clone()))
+        .or_else(|| accounts.first().map(|account| account.id.clone()));
+
+    if let Some(active_id) = active_account_id.as_deref() {
+        for account in &mut accounts {
+            account.is_active = account.id == active_id;
+        }
+    }
+
+    let active_saved_account = active_account_id
+        .as_deref()
+        .and_then(|account_id| accounts.iter().find(|account| account.id == account_id));
+    let active_value = account_value.or_else(|| {
+        account_array(value).and_then(|items| {
+            active_account_id.as_deref().and_then(|account_id| {
+                items.iter().find(|item| {
+                    account_id_from_value(item)
+                        .as_deref()
+                        .is_some_and(|candidate| candidate == account_id)
+                })
+            })
+        })
+    });
+
+    let authenticated = active_value.is_some() || !accounts.is_empty();
+    let rate_limits_payload = account_rate_limits_payload(active_value, value);
     let rate_limits = rate_limits_payload.map(normalize_account_rate_limits);
-    let plan = account_value
+    let plan = active_value
         .and_then(account_plan)
+        .or_else(|| active_saved_account.and_then(|account| account.plan.clone()))
         .or_else(|| rate_limits.as_ref().and_then(|limits| limits.plan.clone()));
     let mut account = AccountSnapshot {
         status: if authenticated {
@@ -1802,15 +2731,18 @@ fn build_account_snapshot(previous: &AccountSnapshot, value: &Value) -> AccountS
         } else {
             "unauthenticated".to_string()
         },
-        mode: account_value
-            .and_then(|account| account.get("type"))
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string(),
-        identity: account_value.and_then(account_identity),
+        mode: active_value
+            .map(account_mode)
+            .or_else(|| active_saved_account.map(|account| account.mode.clone()))
+            .unwrap_or_else(|| "unknown".to_string()),
+        identity: active_value
+            .and_then(account_identity)
+            .or_else(|| active_saved_account.map(|account| account.label.clone())),
         plan,
         rate_limit_summary: rate_limits_payload.map(summarize_json),
         rate_limits,
+        active_account_id,
+        accounts,
         requires_openai_auth: value
             .get("requiresOpenaiAuth")
             .and_then(Value::as_bool)
@@ -1823,7 +2755,7 @@ fn build_account_snapshot(previous: &AccountSnapshot, value: &Value) -> AccountS
         auth_code: None,
     };
 
-    if previous.login_in_progress && !authenticated {
+    if previous.login_in_progress {
         account.login_id = previous.login_id.clone();
         account.auth_notice = previous.auth_notice.clone();
         account.auth_url = previous.auth_url.clone();
@@ -1839,10 +2771,105 @@ fn account_identity(value: &Value) -> Option<String> {
         .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_string))
 }
 
+fn account_id(value: &Value) -> Option<String> {
+    account_id_from_value(value).or_else(|| account_identity(value))
+}
+
+fn account_id_from_value(value: &Value) -> Option<String> {
+    stringish_at(
+        value,
+        &[
+            "id",
+            "accountId",
+            "account_id",
+            "chatgptAccountId",
+            "chatgpt_account_id",
+        ],
+    )
+}
+
+fn account_mode(value: &Value) -> String {
+    stringish_at(value, &["type", "authMode", "mode"]).unwrap_or_else(|| "unknown".to_string())
+}
+
 fn account_plan(value: &Value) -> Option<String> {
     ["planType", "plan", "subscription"]
         .iter()
         .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_string))
+}
+
+fn account_state(value: &Value) -> String {
+    stringish_at(value, &["state", "status", "authStatus"])
+        .unwrap_or_else(|| "authenticated".to_string())
+}
+
+fn account_array<'a>(root: &'a Value) -> Option<&'a Vec<Value>> {
+    root.get("accounts").and_then(Value::as_array)
+}
+
+fn collect_saved_accounts(
+    root: &Value,
+    active_account_id: Option<&str>,
+    active_alias: Option<&Value>,
+) -> Vec<SavedAccountView> {
+    let mut accounts = account_array(root)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| saved_account_from_value(item, active_account_id, false))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if let Some(account) = active_alias.and_then(|item| saved_account_from_value(item, active_account_id, true)) {
+        let exists = accounts
+            .iter()
+            .any(|current| current.id == account.id || current.label == account.label);
+        if !exists {
+            accounts.push(account);
+        }
+    }
+
+    if active_account_id.is_none() {
+        if accounts.len() == 1 {
+            accounts[0].is_active = true;
+        } else if !accounts.iter().any(|account| account.is_active) && !accounts.is_empty() {
+            accounts[0].is_active = true;
+        }
+    }
+
+    accounts
+}
+
+fn saved_account_from_value(
+    value: &Value,
+    active_account_id: Option<&str>,
+    force_active: bool,
+) -> Option<SavedAccountView> {
+    let id = account_id(value)?;
+    let label = account_identity(value).unwrap_or_else(|| id.clone());
+    let is_active = force_active
+        || active_account_id
+            .map(|active| active == id)
+            .unwrap_or(false)
+        || value
+            .get("isActive")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || value
+            .get("active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+    Some(SavedAccountView {
+        id,
+        mode: account_mode(value),
+        label,
+        plan: account_plan(value),
+        state: account_state(value),
+        is_active,
+        last_used_at: integer_at(value, &["lastUsedAt", "last_used_at"]),
+    })
 }
 
 fn account_rate_limits_payload<'a>(
@@ -1855,6 +2882,7 @@ fn account_rate_limits_payload<'a>(
                 .iter()
                 .find_map(|key| account.get(*key))
         })
+        .or_else(|| first_rate_limit_by_limit_id(root))
         .or_else(|| {
             ["rateLimit", "rateLimits", "limits", "usage"]
                 .iter()
@@ -1862,10 +2890,19 @@ fn account_rate_limits_payload<'a>(
         })
 }
 
+fn first_rate_limit_by_limit_id<'a>(value: &'a Value) -> Option<&'a Value> {
+    value
+        .get("rateLimitsByLimitId")
+        .or_else(|| value.get("rate_limits_by_limit_id"))
+        .and_then(Value::as_object)
+        .and_then(|entries| entries.values().find(|candidate| candidate.is_object()))
+}
+
 fn normalize_account_rate_limits(value: &Value) -> AccountRateLimits {
     let plan = ["planType", "plan", "subscription"]
         .iter()
         .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_string));
+    let credits = value.get("credits").and_then(parse_account_credits);
 
     let mut buckets = Vec::new();
 
@@ -1888,7 +2925,11 @@ fn normalize_account_rate_limits(value: &Value) -> AccountRateLimits {
         }
     }
 
-    AccountRateLimits { plan, buckets }
+    AccountRateLimits {
+        plan,
+        credits,
+        buckets,
+    }
 }
 
 fn parse_rate_limit_bucket(key: &str, value: &Value) -> AccountRateLimitBucket {
@@ -1904,6 +2945,29 @@ fn parse_rate_limit_bucket(key: &str, value: &Value) -> AccountRateLimitBucket {
     }
 }
 
+fn parse_account_credits(value: &Value) -> Option<AccountCredits> {
+    if !value.is_object() {
+        return None;
+    }
+
+    let has_credits = value
+        .get("hasCredits")
+        .and_then(Value::as_bool)
+        .or_else(|| value.get("has_credits").and_then(Value::as_bool));
+    let unlimited = value.get("unlimited").and_then(Value::as_bool);
+    let balance = stringish_at(value, &["balance"]);
+
+    if has_credits.is_none() && unlimited.is_none() && balance.is_none() {
+        return None;
+    }
+
+    Some(AccountCredits {
+        has_credits: has_credits.unwrap_or(false),
+        unlimited: unlimited.unwrap_or(false),
+        balance,
+    })
+}
+
 fn parse_window_minutes(value: &Value) -> Option<f64> {
     number_at(value, &["windowDurationMins", "windowMinutes"])
         .or_else(|| {
@@ -1917,6 +2981,21 @@ fn parse_window_minutes(value: &Value) -> Option<f64> {
 fn number_at(value: &Value, keys: &[&str]) -> Option<f64> {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(Value::as_f64))
+}
+
+fn integer_at(value: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_i64)
+            .or_else(|| value.get(*key).and_then(Value::as_u64).and_then(|number| i64::try_from(number).ok()))
+            .or_else(|| {
+                value
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .and_then(|text| text.parse::<i64>().ok())
+            })
+    })
 }
 
 fn stringish_at(value: &Value, keys: &[&str]) -> Option<String> {
@@ -1935,7 +3014,7 @@ fn stringish_at(value: &Value, keys: &[&str]) -> Option<String> {
 fn is_rate_limit_metadata_key(key: &str) -> bool {
     matches!(
         key,
-        "planType" | "plan" | "subscription" | "updatedAt" | "updated_at" | "type"
+        "planType" | "plan" | "subscription" | "updatedAt" | "updated_at" | "type" | "credits"
     )
 }
 
@@ -2344,6 +3423,7 @@ fn redact_json_value(value: &Value) -> Value {
 
 fn is_sensitive_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase().replace('-', "_");
+    let collapsed = normalized.replace('_', "");
     matches!(
         normalized.as_str(),
         "authorization"
@@ -2360,7 +3440,11 @@ fn is_sensitive_key(key: &str) -> bool {
             | "cookie"
             | "set_cookie"
             | "x_api_key"
-    ) || normalized.ends_with("_token")
+    ) || matches!(
+        collapsed.as_str(),
+        "accesstoken" | "refreshtoken" | "idtoken" | "sessiontoken" | "authtoken"
+    )
+        || normalized.ends_with("_token")
         || normalized.ends_with("_secret")
         || normalized.ends_with("_password")
         || normalized.ends_with("_api_key")
@@ -2826,9 +3910,10 @@ mod tests {
         cap_timeline_entries, command_execution_metadata, fallback_thread_summary,
         format_approval_body, format_duration_ms, login_notice, map_generic_approval_decision,
         parse_model_option, parse_reasoning_effort_option, parse_reasoning_effort_options,
-        push_capped, redact_json_value, sanitize_trace_message, should_publish_stream_snapshot,
+        push_capped, redact_json_value, sanitize_trace_message,
+        saved_account_error_requires_reauth, should_publish_stream_snapshot,
         truncate_with_notice, AccountSnapshot, ApprovalEntry, Controller, MetadataRow,
-        TimelineEntry, OUTPUT_CAP,
+        SavedAccountView, TimelineEntry, OUTPUT_CAP,
     };
     use crate::{ReasoningEffortOption, ThreadConfigOverride};
     use kodeks_protocol::ProtocolEvent;
@@ -2850,7 +3935,7 @@ mod tests {
     fn test_controller() -> Controller {
         let (_control_tx, control_rx) = mpsc::unbounded_channel();
         let (snapshot_tx, _snapshot_rx) = watch::channel(super::SessionSnapshot::default());
-        Controller::new(control_rx, snapshot_tx)
+        Controller::new(control_rx, snapshot_tx, std::env::temp_dir().join("kodeks-test-vault"))
     }
 
     fn load_protocol_fixture(name: &str) -> Vec<ProtocolEvent> {
@@ -3056,6 +4141,8 @@ mod tests {
             plan: None,
             rate_limit_summary: None,
             rate_limits: None,
+            active_account_id: None,
+            accounts: Vec::new(),
             requires_openai_auth: true,
             login_in_progress: false,
             login_id: None,
@@ -3085,6 +4172,10 @@ mod tests {
         assert_eq!(snapshot.mode, "chatgpt");
         assert_eq!(snapshot.identity.as_deref(), Some("furkan@example.com"));
         assert_eq!(snapshot.plan.as_deref(), Some("pro"));
+        assert_eq!(snapshot.active_account_id.as_deref(), Some("furkan@example.com"));
+        assert_eq!(snapshot.accounts.len(), 1);
+        assert!(snapshot.accounts[0].is_active);
+        assert_eq!(snapshot.accounts[0].label, "furkan@example.com");
         assert!(snapshot
             .rate_limit_summary
             .as_deref()
@@ -3117,6 +4208,8 @@ mod tests {
             plan: None,
             rate_limit_summary: None,
             rate_limits: None,
+            active_account_id: None,
+            accounts: Vec::new(),
             requires_openai_auth: true,
             login_in_progress: false,
             login_id: None,
@@ -3131,6 +4224,11 @@ mod tests {
             &json!({
                 "rateLimits": {
                     "planType": "pro",
+                    "credits": {
+                        "hasCredits": true,
+                        "unlimited": false,
+                        "balance": "$24.50"
+                    },
                     "primary": {
                         "remaining": 12,
                         "limit": 50,
@@ -3153,7 +4251,20 @@ mod tests {
             .rate_limits
             .as_ref()
             .expect("expected structured limits");
+        assert_eq!(snapshot.accounts.len(), 1);
+        assert_eq!(snapshot.accounts[0].mode, "chatgpt");
         assert_eq!(limits.plan.as_deref(), Some("pro"));
+        assert_eq!(
+            limits
+                .credits
+                .as_ref()
+                .and_then(|credits| credits.balance.as_deref()),
+            Some("$24.50")
+        );
+        assert_eq!(
+            limits.credits.as_ref().map(|credits| credits.has_credits),
+            Some(true)
+        );
         assert_eq!(limits.buckets.len(), 2);
         assert_eq!(limits.buckets[0].label, "Primary");
         assert_eq!(limits.buckets[0].remaining, Some(12.0));
@@ -3167,6 +4278,131 @@ mod tests {
     }
 
     #[test]
+    fn account_snapshot_prefers_rate_limits_by_limit_id_when_available() {
+        let previous = AccountSnapshot {
+            status: "authorizing".to_string(),
+            mode: "unknown".to_string(),
+            identity: None,
+            plan: None,
+            rate_limit_summary: None,
+            rate_limits: None,
+            active_account_id: None,
+            accounts: Vec::new(),
+            requires_openai_auth: true,
+            login_in_progress: false,
+            login_id: None,
+            last_login_error: None,
+            auth_notice: None,
+            auth_url: None,
+            auth_code: None,
+        };
+
+        let snapshot = build_account_snapshot(
+            &previous,
+            &json!({
+                "rateLimits": {
+                    "planType": "pro",
+                    "primary": {
+                        "usedPercent": 76
+                    }
+                },
+                "rateLimitsByLimitId": {
+                    "codex": {
+                        "planType": "pro",
+                        "credits": {
+                            "hasCredits": true,
+                            "unlimited": false,
+                            "balance": "$32.00"
+                        },
+                        "primary": {
+                            "remaining": 18,
+                            "windowDurationMins": 60
+                        }
+                    }
+                },
+                "account": {
+                    "type": "chatgpt",
+                    "email": "furkan@example.com"
+                }
+            }),
+        );
+
+        let limits = snapshot
+            .rate_limits
+            .as_ref()
+            .expect("expected structured limits");
+        assert_eq!(
+            limits
+                .credits
+                .as_ref()
+                .and_then(|credits| credits.balance.as_deref()),
+            Some("$32.00")
+        );
+        assert_eq!(
+            limits.buckets.first().and_then(|bucket| bucket.remaining),
+            Some(18.0)
+        );
+    }
+
+    #[test]
+    fn account_snapshot_reads_saved_accounts_and_active_account_id() {
+        let previous = AccountSnapshot {
+            status: "checking".to_string(),
+            mode: "unknown".to_string(),
+            identity: None,
+            plan: None,
+            rate_limit_summary: None,
+            rate_limits: None,
+            active_account_id: None,
+            accounts: Vec::new(),
+            requires_openai_auth: false,
+            login_in_progress: false,
+            login_id: None,
+            last_login_error: None,
+            auth_notice: None,
+            auth_url: None,
+            auth_code: None,
+        };
+
+        let snapshot = build_account_snapshot(
+            &previous,
+            &json!({
+                "activeAccountId": "acct-b",
+                "accounts": [
+                    {
+                        "id": "acct-a",
+                        "type": "chatgpt",
+                        "email": "first@example.com",
+                        "planType": "pro",
+                        "state": "connected",
+                        "lastUsedAt": 1775782000
+                    },
+                    {
+                        "id": "acct-b",
+                        "type": "chatgpt",
+                        "email": "second@example.com",
+                        "planType": "plus",
+                        "state": "connected",
+                        "lastUsedAt": 1775783000
+                    }
+                ]
+            }),
+        );
+
+        assert_eq!(snapshot.status, "authenticated");
+        assert_eq!(snapshot.active_account_id.as_deref(), Some("acct-b"));
+        assert_eq!(snapshot.identity.as_deref(), Some("second@example.com"));
+        assert_eq!(snapshot.mode, "chatgpt");
+        assert_eq!(snapshot.plan.as_deref(), Some("plus"));
+        assert_eq!(snapshot.accounts.len(), 2);
+        assert_eq!(snapshot.accounts[0].id, "acct-a");
+        assert_eq!(snapshot.accounts[1].id, "acct-b");
+        assert!(!snapshot.accounts[0].is_active);
+        assert!(snapshot.accounts[1].is_active);
+        assert_eq!(snapshot.accounts[1].last_used_at, Some(1775783000));
+    }
+
+    #[test]
     fn account_snapshot_preserves_login_handoff_hints_while_authorizing() {
         let previous = AccountSnapshot {
             status: "authorizing".to_string(),
@@ -3175,6 +4411,8 @@ mod tests {
             plan: None,
             rate_limit_summary: None,
             rate_limits: None,
+            active_account_id: None,
+            accounts: Vec::new(),
             requires_openai_auth: false,
             login_in_progress: true,
             login_id: Some("login-1".to_string()),
@@ -3201,6 +4439,60 @@ mod tests {
         assert_eq!(snapshot.login_id.as_deref(), Some("login-1"));
         assert_eq!(snapshot.auth_code.as_deref(), Some("ABCD-1234"));
         assert!(snapshot.rate_limits.is_none());
+    }
+
+    #[test]
+    fn saved_account_error_classification_stays_conservative() {
+        assert!(saved_account_error_requires_reauth(&anyhow::anyhow!(
+            "request failed with 401 unauthorized"
+        )));
+        assert!(saved_account_error_requires_reauth(&anyhow::anyhow!(
+            "saved account credentials are unavailable for token refresh"
+        )));
+        assert!(!saved_account_error_requires_reauth(&anyhow::anyhow!(
+            "failed to connect to local codex app-server"
+        )));
+    }
+
+    #[test]
+    fn saved_account_refresh_hints_prefer_previous_account_id() {
+        let mut controller = test_controller();
+        controller.pending_saved_account_switch_id = Some("acct-pending".to_string());
+        controller.snapshot.account.active_account_id = Some("acct-active".to_string());
+
+        let hints = controller.saved_account_refresh_hints(&json!({
+            "previousAccountId": "acct-previous"
+        }));
+
+        assert_eq!(
+            hints,
+            vec![
+                "acct-previous".to_string(),
+                "acct-pending".to_string(),
+                "acct-active".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_matches_account_target_accepts_identity_aliases() {
+        let mut controller = test_controller();
+        controller.snapshot.account.identity = Some("target@example.com".to_string());
+        controller.snapshot.account.accounts = vec![SavedAccountView {
+            id: "acct-target".to_string(),
+            mode: "chatgpt".to_string(),
+            label: "target@example.com".to_string(),
+            plan: Some("plus".to_string()),
+            state: "connected".to_string(),
+            is_active: true,
+            last_used_at: None,
+        }];
+
+        assert!(controller.snapshot_matches_account_target(
+            "acct-target",
+            Some("workspace-target"),
+            Some("target@example.com"),
+        ));
     }
 
     #[test]
@@ -3643,6 +4935,8 @@ mod tests {
             plan: None,
             rate_limit_summary: None,
             rate_limits: None,
+            active_account_id: None,
+            accounts: Vec::new(),
             requires_openai_auth: false,
             login_in_progress: true,
             login_id: Some("login-99".to_string()),
@@ -3717,6 +5011,28 @@ mod tests {
         assert_eq!(controller.snapshot.timeline[1].kind, "assistant");
     }
 
+    #[test]
+    fn thread_summary_keeps_last_account_context() {
+        let controller = test_controller();
+        let summary = controller
+            .thread_summary_from_value(&json!({
+                "id": "thread-123",
+                "preview": "Refactor auth",
+                "cwd": "/repo",
+                "status": "idle",
+                "modelProvider": "openai",
+                "updatedAt": 1775780000,
+                "lastAccountId": "acct-a",
+                "lastAccountLabel": "first@example.com",
+                "lastAccountPlan": "pro"
+            }))
+            .expect("expected thread summary");
+
+        assert_eq!(summary.last_account_id.as_deref(), Some("acct-a"));
+        assert_eq!(summary.last_account_label.as_deref(), Some("first@example.com"));
+        assert_eq!(summary.last_account_plan.as_deref(), Some("pro"));
+    }
+
     #[tokio::test]
     async fn rate_limit_notifications_update_account_summary() {
         let mut controller = test_controller();
@@ -3727,6 +5043,11 @@ mod tests {
                 params: json!({
                     "rateLimits": {
                         "planType": "pro",
+                        "credits": {
+                            "hasCredits": true,
+                            "unlimited": false,
+                            "balance": "$11.00"
+                        },
                         "primary": {
                             "usedPercent": 64,
                             "windowDurationMins": 60
@@ -3753,6 +5074,67 @@ mod tests {
                 .and_then(|limits| limits.plan.as_deref()),
             Some("pro")
         );
+        assert_eq!(
+            controller
+                .snapshot
+                .account
+                .rate_limits
+                .as_ref()
+                .and_then(|limits| limits.credits.as_ref())
+                .and_then(|credits| credits.balance.as_deref()),
+            Some("$11.00")
+        );
+        assert_eq!(
+            controller
+                .snapshot
+                .account
+                .rate_limits
+                .as_ref()
+                .and_then(|limits| limits.buckets.first())
+                .and_then(|bucket| bucket.used_percent),
+            Some(64.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limit_notifications_ignore_updates_for_other_accounts() {
+        let mut controller = test_controller();
+        controller.snapshot.account.active_account_id = Some("acct-a".to_string());
+
+        controller
+            .handle_protocol_event(ProtocolEvent::Notification {
+                method: "account/rateLimits/updated".to_string(),
+                params: json!({
+                    "accountId": "acct-b",
+                    "rateLimits": {
+                        "planType": "pro",
+                        "primary": {
+                            "usedPercent": 64
+                        }
+                    }
+                }),
+            })
+            .await;
+
+        assert!(controller.snapshot.account.rate_limit_summary.is_none());
+        assert!(controller.snapshot.account.rate_limits.is_none());
+
+        controller
+            .handle_protocol_event(ProtocolEvent::Notification {
+                method: "account/rateLimits/updated".to_string(),
+                params: json!({
+                    "accountId": "acct-a",
+                    "rateLimits": {
+                        "planType": "pro",
+                        "primary": {
+                            "usedPercent": 64
+                        }
+                    }
+                }),
+            })
+            .await;
+
+        assert_eq!(controller.snapshot.account.plan.as_deref(), Some("pro"));
         assert_eq!(
             controller
                 .snapshot
