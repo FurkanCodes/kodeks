@@ -11,7 +11,9 @@ use kodeks_protocol::{
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::account_vault::{LocalAccountVault, StoredAccountCredential};
+use crate::account_vault::{
+    LegacyTokenMigrationOutcome, LocalAccountVault, StoredAccountCredential,
+};
 use crate::model::{
     AccountCredits, AccountRateLimitBucket, AccountRateLimits, AccountSnapshot, ApprovalEntry,
     DiagnosticTrace, DiagnosticWarning, DiffSnapshot, MetadataRow, ModelOption,
@@ -385,6 +387,14 @@ struct PendingServerRequest {
     method: String,
 }
 
+struct SavedAccountRefreshResponse {
+    account_id: String,
+    resolved_hint: Option<String>,
+    chatgpt_account_id: String,
+    plan: Option<String>,
+    result: Value,
+}
+
 struct Controller {
     vault: LocalAccountVault,
     snapshot: SessionSnapshot,
@@ -410,8 +420,16 @@ impl Controller {
         snapshot_tx: watch::Sender<SessionSnapshot>,
         storage_dir: PathBuf,
     ) -> Self {
+        Self::with_vault(control_rx, snapshot_tx, LocalAccountVault::new(storage_dir))
+    }
+
+    fn with_vault(
+        control_rx: mpsc::UnboundedReceiver<ControlMessage>,
+        snapshot_tx: watch::Sender<SessionSnapshot>,
+        vault: LocalAccountVault,
+    ) -> Self {
         Self {
-            vault: LocalAccountVault::new(storage_dir),
+            vault,
             snapshot: SessionSnapshot::default(),
             snapshot_tx,
             control_rx,
@@ -491,6 +509,7 @@ impl Controller {
         self.apply_initialize_result(&initialize);
         app_server.notify("initialized", None)?;
 
+        self.migrate_saved_account_tokens()?;
         self.refresh_account().await?;
         if let Err(error) = self.capture_current_chatgpt_account(false).await {
             self.add_warning(
@@ -506,6 +525,47 @@ impl Controller {
         self.auto_recovery_attempted_since_ready = false;
         self.set_connection_state("ready", "Connected to local Codex runtime", None);
         Ok(())
+    }
+
+    fn migrate_saved_account_tokens(&mut self) -> Result<Vec<LegacyTokenMigrationOutcome>> {
+        let outcomes = self.vault.migrate_legacy_plaintext_tokens()?;
+        if outcomes.is_empty() {
+            return Ok(outcomes);
+        }
+
+        self.trace_account_event(
+            "saved.migration.start",
+            json!({
+                "count": outcomes.len(),
+            }),
+        );
+
+        for outcome in &outcomes {
+            let event = if outcome.migrated {
+                "saved.migration.succeeded"
+            } else {
+                "saved.migration.failed"
+            };
+            self.trace_account_event(
+                event,
+                json!({
+                    "accountId": outcome.account_id,
+                    "migrated": outcome.migrated,
+                    "requiresReauth": outcome.requires_reauth,
+                    "error": outcome.error,
+                }),
+            );
+        }
+
+        self.trace_account_event(
+            "saved.migration.completed",
+            json!({
+                "count": outcomes.len(),
+                "requiresReauthCount": outcomes.iter().filter(|outcome| outcome.requires_reauth).count(),
+            }),
+        );
+        self.sync_snapshot_saved_accounts();
+        Ok(outcomes)
     }
 
     async fn handle_control(&mut self, message: ControlMessageKind) -> Result<ControlResponse> {
@@ -1012,16 +1072,7 @@ impl Controller {
                 "params": &params,
             }),
         );
-        let mut stored = None;
-        let mut resolved_hint = None;
-        for hint in hints {
-            if let Some(credential) = self.vault.get_credential_by_hint(&hint)? {
-                resolved_hint = Some(hint);
-                stored = Some(credential);
-                break;
-            }
-        }
-        if stored.is_none() {
+        let Some(refresh_response) = self.saved_account_refresh_response(&params)? else {
             self.trace_account_event(
                 "token.refresh.missing_credentials",
                 json!({
@@ -1029,29 +1080,52 @@ impl Controller {
                     "params": &params,
                 }),
             );
-        }
-        let stored = stored.context("saved account credentials are unavailable for token refresh")?;
-        let account_id = stored.account.id.clone();
+            return Err(anyhow!(
+                "saved account credentials are unavailable for token refresh"
+            ));
+        };
         let app_server = self.app_server()?;
-        app_server.respond(
-            id,
+        app_server.respond(id, refresh_response.result.clone())?;
+        self.trace_account_event(
+            "token.refresh.responded",
             json!({
+                "accountId": refresh_response.account_id,
+                "resolvedHint": refresh_response.resolved_hint,
+                "chatgptAccountId": refresh_response.chatgpt_account_id,
+                "plan": refresh_response.plan,
+            }),
+        );
+        let _ = self.vault.mark_state(&refresh_response.account_id, "connected");
+        Ok(())
+    }
+
+    fn saved_account_refresh_response(
+        &self,
+        params: &Value,
+    ) -> Result<Option<SavedAccountRefreshResponse>> {
+        let mut stored = None;
+        let mut resolved_hint = None;
+        for hint in self.saved_account_refresh_hints(params) {
+            if let Some(credential) = self.vault.get_credential_by_hint(&hint)? {
+                resolved_hint = Some(hint);
+                stored = Some(credential);
+                break;
+            }
+        }
+        let Some(stored) = stored else {
+            return Ok(None);
+        };
+        Ok(Some(SavedAccountRefreshResponse {
+            account_id: stored.account.id.clone(),
+            resolved_hint,
+            chatgpt_account_id: stored.account.chatgpt_account_id.clone(),
+            plan: stored.account.plan.clone(),
+            result: json!({
                 "accessToken": stored.access_token,
                 "chatgptAccountId": stored.account.chatgpt_account_id,
                 "chatgptPlanType": stored.account.plan,
             }),
-        )?;
-        self.trace_account_event(
-            "token.refresh.responded",
-            json!({
-                "accountId": account_id,
-                "resolvedHint": resolved_hint,
-                "chatgptAccountId": stored.account.chatgpt_account_id,
-                "plan": stored.account.plan,
-            }),
-        );
-        let _ = self.vault.mark_state(&account_id, "connected");
-        Ok(())
+        }))
     }
 
     fn saved_account_refresh_hints(&self, params: &Value) -> Vec<String> {
@@ -3915,10 +3989,12 @@ mod tests {
         truncate_with_notice, AccountSnapshot, ApprovalEntry, Controller, MetadataRow,
         SavedAccountView, TimelineEntry, OUTPUT_CAP,
     };
+    use crate::account_vault::{InMemorySecretStore, LocalAccountVault};
     use crate::{ReasoningEffortOption, ThreadConfigOverride};
     use kodeks_protocol::ProtocolEvent;
     use serde::Deserialize;
     use serde_json::{json, Value};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
     use tokio::sync::{mpsc, watch};
 
@@ -3932,10 +4008,31 @@ mod tests {
         code: Option<i32>,
     }
 
+    fn test_storage_dir(name: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("kodeks-runtime-tests-{name}-{unique}"))
+    }
+
     fn test_controller() -> Controller {
         let (_control_tx, control_rx) = mpsc::unbounded_channel();
         let (snapshot_tx, _snapshot_rx) = watch::channel(super::SessionSnapshot::default());
-        Controller::new(control_rx, snapshot_tx, std::env::temp_dir().join("kodeks-test-vault"))
+        Controller::new(control_rx, snapshot_tx, test_storage_dir("default"))
+    }
+
+    fn test_controller_with_vault(vault: LocalAccountVault) -> Controller {
+        let (_control_tx, control_rx) = mpsc::unbounded_channel();
+        let (snapshot_tx, _snapshot_rx) = watch::channel(super::SessionSnapshot::default());
+        Controller::with_vault(control_rx, snapshot_tx, vault)
+    }
+
+    fn test_secret_vault(name: &str) -> (LocalAccountVault, InMemorySecretStore) {
+        let store = InMemorySecretStore::default();
+        let vault =
+            LocalAccountVault::with_secret_store(test_storage_dir(name), Arc::new(store.clone()));
+        (vault, store)
     }
 
     fn load_protocol_fixture(name: &str) -> Vec<ProtocolEvent> {
@@ -4472,6 +4569,119 @@ mod tests {
                 "acct-active".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn saved_account_boot_migration_moves_plaintext_tokens_before_restore() {
+        let (vault, store) = test_secret_vault("boot-migration");
+        vault
+            .seed_legacy_plaintext_account(
+                "acct-a",
+                "first@example.com",
+                Some("plus"),
+                "connected",
+                "acct-a",
+                "legacy-token",
+            )
+            .expect("seed should succeed");
+        let mut controller = test_controller_with_vault(vault);
+
+        let outcomes = controller
+            .migrate_saved_account_tokens()
+            .expect("migration should succeed");
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].migrated);
+        assert_eq!(store.secret("acct-a").as_deref(), Some("legacy-token"));
+        assert_eq!(
+            controller
+                .vault
+                .plaintext_access_token_for_test("acct-a")
+                .expect("query should succeed"),
+            None
+        );
+        assert_eq!(
+            controller
+                .vault
+                .get_credential("acct-a")
+                .expect("credential lookup should succeed")
+                .map(|credential| credential.access_token),
+            Some("legacy-token".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn select_account_without_secure_credential_marks_reauth_required() {
+        let (vault, _store) = test_secret_vault("select-missing-secret");
+        vault
+            .seed_legacy_plaintext_account(
+                "acct-a",
+                "first@example.com",
+                Some("plus"),
+                "connected",
+                "acct-a",
+                "legacy-token",
+            )
+            .expect("seed should succeed");
+        let mut controller = test_controller_with_vault(vault);
+
+        let error = controller
+            .select_account("acct-a".to_string())
+            .await
+            .expect_err("selection should fail without secure credential");
+
+        assert!(error
+            .to_string()
+            .contains("missing a stored token"));
+        assert_eq!(
+            controller
+                .vault
+                .account_state_for_test("acct-a")
+                .expect("query should succeed")
+                .as_deref(),
+            Some("reauth required")
+        );
+    }
+
+    #[test]
+    fn token_refresh_payloads_source_credentials_only_from_secure_storage() {
+        let (vault, _store) = test_secret_vault("refresh-payload");
+        vault
+            .seed_legacy_plaintext_account(
+                "acct-a",
+                "first@example.com",
+                Some("plus"),
+                "connected",
+                "acct-a",
+                "legacy-token",
+            )
+            .expect("seed should succeed");
+        let mut controller = test_controller_with_vault(vault);
+        controller.pending_saved_account_switch_id = Some("acct-a".to_string());
+
+        assert!(controller
+            .saved_account_refresh_response(&json!({
+                "previousAccountId": "acct-a"
+            }))
+            .expect("refresh lookup should succeed")
+            .is_none());
+
+        controller
+            .migrate_saved_account_tokens()
+            .expect("migration should succeed");
+
+        let payload = controller
+            .saved_account_refresh_response(&json!({
+                "previousAccountId": "acct-a"
+            }))
+            .expect("refresh lookup should succeed")
+            .expect("secure credential should now be available");
+
+        assert_eq!(payload.account_id, "acct-a");
+        assert_eq!(payload.resolved_hint.as_deref(), Some("acct-a"));
+        assert_eq!(payload.result["accessToken"], "legacy-token");
+        assert_eq!(payload.result["chatgptAccountId"], "acct-a");
+        assert_eq!(payload.result["chatgptPlanType"], "plus");
     }
 
     #[test]
