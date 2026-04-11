@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import type { SidebarGroup, SidebarThread } from '../../lib/shellState'
+import { LoadingSpinner } from './LoadingSpinner'
 import {
   ArchiveIcon,
   ChevronIcon,
@@ -14,11 +15,20 @@ import {
 
 export type { SidebarGroup, SidebarThread } from '../../lib/shellState'
 
+export type SidebarAccount = {
+  id: string
+  label: string
+  planLabel: string
+  isActive: boolean
+  switching?: boolean
+}
+
 type SidebarProps = {
   collapsed: boolean
   groups: SidebarGroup[]
   archivedThreads: SidebarThread[]
   accountMenuOpen: boolean
+  accounts: SidebarAccount[]
   accountLabel: string
   planLabel: string
   onAddProject: () => void
@@ -31,6 +41,8 @@ type SidebarProps = {
   onRemoveProject: (rootPath: string) => void
   onToggleGroup: (groupKey: string) => void
   onToggleAccountMenu: () => void
+  onSelectAccount: (accountId: string) => void
+  onAddAccount: () => void
   onOpenSettings: () => void
   onSignOut: () => void
   signOutDisabled: boolean
@@ -119,12 +131,25 @@ function FlyoutButton(props: {
 
 function AccountFlyout(props: {
   collapsed: boolean
+  accounts: SidebarAccount[]
   accountLabel: string
   planLabel: string
+  onSelectAccount: (accountId: string) => void
+  onAddAccount: () => void
   onOpenSettings: () => void
   onSignOut: () => void
   signOutDisabled: boolean
 }) {
+  const activeAccount =
+    props.accounts.find((account) => account.isActive) || {
+      id: 'active',
+      label: props.accountLabel,
+      planLabel: props.planLabel,
+      isActive: true,
+    }
+  const switchingAccount = props.accounts.find((account) => account.switching)
+  const switchableAccounts = props.accounts.filter((account) => account.id !== activeAccount.id)
+
   return (
     <div
       className={`absolute z-50 rounded-[13px] bg-[#18181b] py-1 shadow-[0_24px_80px_rgba(0,0,0,0.45)] ${
@@ -132,16 +157,78 @@ function AccountFlyout(props: {
       }`}
     >
       <div className="mb-1 px-3 py-2">
-        <div className="truncate text-[13px] font-medium text-neutral-200">{props.accountLabel}</div>
-        <div className="text-[11.5px] text-neutral-500">{props.planLabel}</div>
+        <div className="truncate text-[13px] font-medium text-neutral-200">{activeAccount.label}</div>
+        <div className="text-[11.5px] text-neutral-500">{activeAccount.planLabel}</div>
+        {switchingAccount ? (
+          <div className="mt-1.5 flex items-center gap-1.5 text-[10.5px] text-neutral-300">
+            <LoadingSpinner size={11} strokeWidth={1.4} />
+            <span className="truncate">
+              {switchingAccount.id === activeAccount.id
+                ? 'Finishing account switch...'
+                : `Switching to ${switchingAccount.label}...`}
+            </span>
+          </div>
+        ) : null}
       </div>
 
-      <FlyoutButton label="Settings" icon={SettingsIcon} onClick={props.onOpenSettings} />
+      {switchableAccounts.length > 0 ? (
+        <div className="mb-1 space-y-0.5 px-3 py-1">
+          <div className="px-0.5 text-[10px] font-semibold uppercase tracking-[0.11em] text-neutral-500">
+            Switch account
+          </div>
+          {switchableAccounts.map((account) => (
+            <button
+              key={account.id}
+              type="button"
+              className={`flex w-full items-center justify-between rounded-[7px] px-2.5 py-1.5 text-left text-[11.5px] transition ${
+                props.signOutDisabled
+                  ? 'cursor-not-allowed text-neutral-500'
+                  : 'text-neutral-300 hover:bg-white/5 hover:text-white'
+              }`}
+              onClick={() => {
+                console.info('[kodeks-account-ui] sidebar switch click', {
+                  requestedAccountId: account.id,
+                  label: account.label,
+                })
+                props.onSelectAccount(account.id)
+              }}
+              disabled={props.signOutDisabled}
+            >
+              <span className="truncate pr-2">{account.label}</span>
+              <span className="shrink-0">
+                {account.switching ? (
+                  <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.08em] text-neutral-300">
+                    <LoadingSpinner size={10} strokeWidth={1.35} />
+                    <span>Switching...</span>
+                  </span>
+                ) : (
+                  <span className="text-[10px] uppercase tracking-[0.08em] text-neutral-500">
+                    {account.planLabel}
+                  </span>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <FlyoutButton
+        label="Add ChatGPT account"
+        icon={PlusIcon}
+        disabled={props.signOutDisabled}
+        onClick={props.onAddAccount}
+      />
+      <FlyoutButton
+        label="Settings"
+        icon={SettingsIcon}
+        disabled={props.signOutDisabled}
+        onClick={props.onOpenSettings}
+      />
 
       <div className="mx-3 my-1.5 h-px bg-white/[0.04]" />
 
       <FlyoutButton
-        label="Sign Out"
+        label="Sign out current"
         icon={LogoutIcon}
         danger
         disabled={props.signOutDisabled}
@@ -234,8 +321,11 @@ export function Sidebar(props: SidebarProps) {
           {props.accountMenuOpen ? (
             <AccountFlyout
               collapsed
+              accounts={props.accounts}
               accountLabel={props.accountLabel}
               planLabel={props.planLabel}
+              onSelectAccount={props.onSelectAccount}
+              onAddAccount={props.onAddAccount}
               onOpenSettings={props.onOpenSettings}
               onSignOut={props.onSignOut}
               signOutDisabled={props.signOutDisabled}
@@ -378,9 +468,14 @@ export function Sidebar(props: SidebarProps) {
                       key={thread.id}
                       onClick={() => props.onSelectThread(thread.id)}
                     >
-                      <span className="min-w-0 flex-1 truncate py-0.5 pr-2 text-[13px] tracking-[-0.02em]">
-                        {thread.label}
-                      </span>
+                      <div className="min-w-0 flex flex-1 items-center gap-1.5 py-0.5 pr-2">
+                        <span className="min-w-0 flex-1 truncate text-[13px] tracking-[-0.02em]">{thread.label}</span>
+                        {thread.accountTag ? (
+                          <span className="max-w-[88px] shrink-0 truncate rounded-full border border-white/6 bg-white/[0.02] px-1.5 py-0.5 text-[9px] uppercase tracking-[0.08em] text-neutral-500">
+                            {thread.accountTag}
+                          </span>
+                        ) : null}
+                      </div>
 
                       <div className="flex h-4.5 shrink-0 items-center">
                         <div className="flex items-center opacity-0 transition-opacity group-hover:opacity-100">
@@ -465,8 +560,11 @@ export function Sidebar(props: SidebarProps) {
         {props.accountMenuOpen ? (
           <AccountFlyout
             collapsed={false}
+            accounts={props.accounts}
             accountLabel={props.accountLabel}
             planLabel={props.planLabel}
+            onSelectAccount={props.onSelectAccount}
+            onAddAccount={props.onAddAccount}
             onOpenSettings={props.onOpenSettings}
             onSignOut={props.onSignOut}
             signOutDisabled={props.signOutDisabled}

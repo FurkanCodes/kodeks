@@ -39,6 +39,7 @@ function makeStore(): WorkspaceStore {
     threadPreferences: {},
     ui: {
       sidebarCollapsed: false,
+      showComposerRateLimits: true,
     },
   }
 }
@@ -75,7 +76,7 @@ function makeThreads(): Snapshot['threads'] {
 }
 
 test('buildSidebarGroups keeps saved zero-thread projects visible and ordered by recency', () => {
-  const groups = buildSidebarGroups(makeThreads(), makeStore(), '/work/bravo', null, {}, null)
+  const groups = buildSidebarGroups(makeThreads(), makeStore(), '/work/bravo', null, {}, null, null, 0)
 
   assert.deepEqual(
     groups.map((group) => ({
@@ -93,7 +94,16 @@ test('buildSidebarGroups keeps saved zero-thread projects visible and ordered by
 })
 
 test('buildSidebarGroups marks the active live thread inside its project bucket', () => {
-  const groups = buildSidebarGroups(makeThreads(), makeStore(), '/work/alpha', 'thread-1', {}, 'turn-9')
+  const groups = buildSidebarGroups(
+    makeThreads(),
+    makeStore(),
+    '/work/alpha',
+    'thread-1',
+    {},
+    'turn-9',
+    null,
+    0,
+  )
   const alpha = groups.find((group) => group.key === '/work/alpha')
 
   if (!alpha) {
@@ -106,8 +116,30 @@ test('buildSidebarGroups marks the active live thread inside its project bucket'
       label: 'Alpha thread',
       active: true,
       live: true,
+      accountTag: null,
     },
   ])
+})
+
+test('buildSidebarGroups shows a subtle account tag when thread account differs from active', () => {
+  const threads = makeThreads().map((thread) =>
+    thread.id === 'thread-1'
+      ? {
+          ...thread,
+          last_account_id: 'acct-2',
+          last_account_label: 'second@example.com',
+        }
+      : thread,
+  )
+
+  const groups = buildSidebarGroups(threads, makeStore(), '/work/alpha', 'thread-1', {}, null, 'acct-1', 2)
+  const alpha = groups.find((group) => group.key === '/work/alpha')
+
+  if (!alpha) {
+    throw new Error('expected alpha project group to exist')
+  }
+
+  assert.equal(alpha.threads[0]?.accountTag, 'second@example.com')
 })
 
 test('mostRecentProjectRoot ignores removed projects', () => {

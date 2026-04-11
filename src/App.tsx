@@ -14,32 +14,40 @@ import {
 } from './components/shell/MessageTimeline'
 import {
   SettingsModal,
+  type SettingsRow,
   type SettingsSection,
   type SettingsSectionKey,
 } from './components/shell/SettingsModal'
-import { Sidebar } from './components/shell/Sidebar'
+import { LoadingSpinner } from './components/shell/LoadingSpinner'
+import { Sidebar, type SidebarAccount } from './components/shell/Sidebar'
 import { TopBar, type TopBarRunState } from './components/shell/TopBar'
 import {
   archiveThread,
   cancelLogin,
   type ApprovalEntry,
+  disconnectAccount,
   getSnapshot,
   interruptTurn,
   listModels,
   listWorkspaceFiles,
-  loginApiKey,
   loginChatgpt,
   logout,
   onSnapshot,
+  openExternalUrl,
   openWorkspaceFile,
   pickWorkspaceFolder,
+  type RateLimitBucketView,
+  type RateLimitsView,
+  type SavedAccountView,
   type Snapshot,
   readWorkspaceFile,
+  refreshRateLimits,
   refreshRuntime,
   resolveApproval,
   savePastedImage,
   restartRuntime,
   type ReasoningEffortOption,
+  selectAccount,
   selectThread,
   sendPrompt,
   type ModelOption,
@@ -55,6 +63,7 @@ import {
   removeProjectGrouping,
   renameProject,
   saveWorkspaceStore,
+  setComposerRateLimitsVisible,
   setSidebarCollapsed,
   setThreadPreference,
   upsertProject,
@@ -86,6 +95,9 @@ const EMPTY_SNAPSHOT: Snapshot = {
     identity: null,
     plan: null,
     rate_limit_summary: null,
+    rate_limits: null,
+    active_account_id: null,
+    accounts: [],
     requires_openai_auth: false,
     login_in_progress: false,
     login_id: null,
@@ -186,6 +198,22 @@ type ComposerImageAttachment = {
 }
 
 type PermissionPreset = 'default' | 'full-access'
+type ComposerRateLimitDisplay = {
+  label: string
+  value: string
+  reset?: string | null
+  tone: 'calm' | 'warning' | 'muted'
+}
+
+type RateLimitSummaryItem = {
+  key: string
+  kind: 'credits' | 'bucket'
+  label: string
+  primary: string
+  secondary: string
+  reset?: string | null
+  tone: 'calm' | 'warning' | 'muted'
+}
 
 type ShellNavigationEntry =
   | { kind: 'project'; rootPath: string }
@@ -199,6 +227,7 @@ type ShellHistoryState = {
 function App() {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const composerAttachmentsRef = useRef<ComposerImageAttachment[]>([])
+  const accountTraceConsoleHeadRef = useRef<string | null>(null)
 
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY_SNAPSHOT)
   const [workspaceStore, setWorkspaceStore] = useState<WorkspaceStore>(() => loadWorkspaceStore())
@@ -207,8 +236,8 @@ function App() {
     index: -1,
   })
   const [models, setModels] = useState<ModelOption[]>([])
-  const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
+  const [accountSwitchingId, setAccountSwitchingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [activeProjectViewRoot, setActiveProjectViewRoot] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState('')
@@ -383,6 +412,35 @@ function App() {
     [activeProjectViewRoot, activeThread?.updated_at, error, snapshot],
   )
 
+  const sidebarAccounts = useMemo<SidebarAccount[]>(
+    () =>
+      buildSidebarAccounts(
+        snapshot.account.accounts,
+        snapshot.account.active_account_id || null,
+        snapshot.account.identity || (snapshot.account.status === 'authenticated' ? 'Current account' : null),
+        snapshot.account.plan || null,
+        accountSwitchingId,
+      ),
+    [
+      accountSwitchingId,
+      snapshot.account.accounts,
+      snapshot.account.active_account_id,
+      snapshot.account.identity,
+      snapshot.account.status,
+      snapshot.account.plan,
+    ],
+  )
+
+  const hasUsableAccounts = sidebarAccounts.length > 0
+  const accountSwitchInProgress = Boolean(accountSwitchingId)
+  const switchingAccount = useMemo(
+    () =>
+      accountSwitchingId
+        ? normalizeSavedAccounts(snapshot.account).find((account) => account.id === accountSwitchingId) || null
+        : null,
+    [accountSwitchingId, snapshot.account],
+  )
+
   const sidebarGroups = useMemo(
     () =>
       buildSidebarGroups(
@@ -392,8 +450,19 @@ function App() {
         activeProjectViewRoot ? null : snapshot.active_thread_id ?? null,
         expandedGroups,
         activeTurnId,
+        snapshot.account.active_account_id || null,
+        sidebarAccounts.length,
       ),
-    [activeProjectViewRoot, activeTurnId, expandedGroups, snapshot.active_thread_id, snapshot.threads, workspaceStore],
+    [
+      activeProjectViewRoot,
+      activeTurnId,
+      expandedGroups,
+      snapshot.account.active_account_id,
+      snapshot.active_thread_id,
+      snapshot.threads,
+      sidebarAccounts.length,
+      workspaceStore,
+    ],
   )
 
   const archivedThreads = useMemo<SidebarThread[]>(
@@ -426,10 +495,35 @@ function App() {
 
   const settingsSections = useMemo(
     () =>
-      buildSettingsSections(snapshot, apiKey, (value) => setApiKey(value), () => {
-        void handleLogout()
-      }),
-    [apiKey, snapshot],
+      buildSettingsSections(
+        snapshot,
+        accountSwitchingId,
+        workspaceStore.ui.showComposerRateLimits,
+        () => {
+          setWorkspaceStore((current) => setComposerRateLimitsVisible(current, !current.ui.showComposerRateLimits))
+        },
+        () => {
+          void handleLoginChatgpt()
+        },
+        (url) => {
+          void handleOpenSignInLink(url)
+        },
+        (accountId) => {
+          void handleSelectAccount(accountId)
+        },
+        (accountId) => {
+          void handleDisconnectAccount(accountId)
+        },
+        () => {
+          void handleLogout()
+        },
+      ),
+    [accountSwitchingId, snapshot, workspaceStore.ui.showComposerRateLimits],
+  )
+
+  const composerRateLimitDisplays = useMemo(
+    () => buildComposerRateLimitDisplays(snapshot.account.rate_limits),
+    [snapshot.account.rate_limits],
   )
 
   const noticeContent = useMemo<ReactNode | undefined>(() => {
@@ -449,86 +543,14 @@ function App() {
       )
     }
 
-    if (snapshot.account.status !== 'authenticated' || snapshot.account.login_in_progress) {
+    if (accountSwitchInProgress) {
       return (
-        <NoticeCard
-          eyebrow="Account"
-          title={
-            snapshot.account.login_in_progress
-              ? 'Finish signing in to keep working'
-              : 'Sign in before you start a Codex session'
-          }
-        >
-          <p>
-            {snapshot.account.login_in_progress
-              ? 'Use the browser handoff or verification code below. Kodeks will keep the workspace ready while Codex finishes account setup.'
-              : 'Choose ChatGPT or an API key. Credentials stay managed by Codex, not by Kodeks.'}
-          </p>
-
-          {snapshot.account.auth_notice ? (
-            <div className="mt-4 rounded-[14px] bg-white/[0.03] px-4 py-3 text-[13px] leading-[1.65] tracking-[-0.01em] text-neutral-400">
-              {snapshot.account.auth_notice}
-            </div>
-          ) : null}
-
-          {snapshot.account.auth_code ? (
-            <div className="mt-3 rounded-[14px] bg-white/[0.03] px-4 py-3 text-[13px] tracking-[-0.01em] text-neutral-400">
-              Verification code
-              <span className="ml-2 shell-menlo text-neutral-200">{snapshot.account.auth_code}</span>
-            </div>
-          ) : null}
-
-          {snapshot.account.last_login_error ? (
-            <div className="mt-3 rounded-[14px] bg-red-500/5 px-4 py-3 text-[13px] leading-[1.65] tracking-[-0.01em] text-red-200/80">
-              {snapshot.account.last_login_error}
-            </div>
-          ) : null}
-
-          <div className="mt-5 grid gap-4 md:grid-cols-[auto_minmax(0,1fr)]">
-            <div className="flex flex-wrap gap-2">
-              <NoticeButton
-                onClick={() => void handleLoginChatgpt()}
-                disabled={busy || snapshot.account.login_in_progress}
-                bright
-              >
-                Continue with ChatGPT
-              </NoticeButton>
-              {snapshot.account.auth_url ? (
-                <a
-                  className="inline-flex h-[31.25px] items-center rounded-[4px] border border-white/10 px-3 text-[11.5px] font-medium tracking-[0.01em] text-neutral-400 transition hover:border-white/20 hover:text-neutral-200"
-                  href={snapshot.account.auth_url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open sign-in link
-                </a>
-              ) : null}
-              {snapshot.account.login_in_progress && snapshot.account.login_id ? (
-                <NoticeButton onClick={() => void handleCancelLogin()} disabled={busy}>
-                  Cancel sign-in
-                </NoticeButton>
-              ) : null}
-            </div>
-
-            <div className="rounded-[14px] bg-white/[0.03] px-4 py-4">
-              <label className="block text-[10px] font-semibold uppercase tracking-[0.1em] text-neutral-500">
-                API key
-              </label>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <input
-                  type="password"
-                  className="h-[33.5px] min-w-[220px] flex-1 rounded-[8px] border border-white/10 bg-white/5 px-3 text-[13px] tracking-[-0.01em] text-neutral-200 outline-none placeholder:text-neutral-500"
-                  placeholder="Paste OpenAI or Codex API key"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.currentTarget.value)}
-                />
-                <NoticeButton
-                  onClick={() => void handleLoginApiKey()}
-                  disabled={busy || snapshot.account.login_in_progress}
-                >
-                  Use API key
-                </NoticeButton>
-              </div>
+        <NoticeCard eyebrow="Accounts" title={`Switching to ${switchingAccount?.label || 'selected account'}`}>
+          <div className="flex items-start gap-3">
+            <LoadingSpinner className="mt-1" size={15} />
+            <div>
+              <p>Keeping your current account live until the new session is ready.</p>
+              <p className="mt-2">Refreshing identity, rate limits, and saved-account state can take a moment.</p>
             </div>
           </div>
         </NoticeCard>
@@ -544,11 +566,44 @@ function App() {
     }
 
     return undefined
-  }, [apiKey, busy, error, snapshot])
+  }, [accountSwitchInProgress, error, snapshot, switchingAccount?.label])
 
   useEffect(() => {
     saveWorkspaceStore(workspaceStore)
   }, [workspaceStore])
+
+  useEffect(() => {
+    const accountTraces = snapshot.diagnostics.traces.filter((trace) => trace.direction === 'acct')
+    if (accountTraces.length === 0) {
+      return
+    }
+
+    const latestMessage = accountTraces[0]?.message ?? null
+    const lastLoggedMessage = accountTraceConsoleHeadRef.current
+    const tracesToLog =
+      lastLoggedMessage === null ? [...accountTraces].reverse() : []
+
+    if (lastLoggedMessage !== null) {
+      for (const trace of accountTraces) {
+        if (trace.message === lastLoggedMessage) {
+          break
+        }
+        tracesToLog.push(trace)
+      }
+      tracesToLog.reverse()
+    }
+
+    if (tracesToLog.length === 0) {
+      accountTraceConsoleHeadRef.current = latestMessage
+      return
+    }
+
+    for (const trace of tracesToLog) {
+      console.info('[kodeks-account]', trace.message)
+    }
+
+    accountTraceConsoleHeadRef.current = latestMessage
+  }, [snapshot.diagnostics.traces])
 
   useEffect(() => {
     if (pendingApprovals.length === 0) {
@@ -732,7 +787,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!currentProjectRoot || snapshot.account.status !== 'authenticated') {
+    if (!currentProjectRoot || !hasUsableAccounts) {
       setWorkspaceFiles([])
       return
     }
@@ -756,7 +811,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [currentProjectRoot, snapshot.account.status])
+  }, [currentProjectRoot, hasUsableAccounts])
 
   useEffect(() => {
     if (!selectedCodePath || !currentProjectRoot) {
@@ -1096,24 +1151,6 @@ function App() {
     }
   }
 
-  async function handleLoginApiKey() {
-    const trimmedApiKey = apiKey.trim()
-    if (!trimmedApiKey) {
-      return
-    }
-
-    setBusy(true)
-    setError(null)
-    try {
-      setSnapshot(await loginApiKey(trimmedApiKey))
-      setApiKey('')
-    } catch (nextError) {
-      setError(stringifyError(nextError))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   async function handleCancelLogin() {
     setBusy(true)
     setError(null)
@@ -1138,6 +1175,88 @@ function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  async function handleSelectAccount(accountId: string) {
+    const selectionContext = {
+      requestedAccountId: accountId,
+      activeAccountId: snapshot.account.active_account_id || null,
+      activeIdentity: snapshot.account.identity || null,
+      accountSwitchInProgress,
+      busy,
+      savedAccounts: snapshot.account.accounts.map((account) => ({
+        id: account.id,
+        label: account.label,
+        isActive: account.is_active,
+        state: account.state,
+      })),
+    }
+    console.info('[kodeks-account-ui] select requested', selectionContext)
+
+    if (!accountId || snapshot.account.active_account_id === accountId || accountSwitchInProgress) {
+      console.info('[kodeks-account-ui] select ignored', {
+        ...selectionContext,
+        reason: !accountId
+          ? 'missing-account-id'
+          : snapshot.account.active_account_id === accountId
+            ? 'already-active'
+            : 'switch-in-progress',
+      })
+      setAccountMenuOpen(false)
+      return
+    }
+
+    setAccountMenuOpen(false)
+    setAccountSwitchingId(accountId)
+    setError(null)
+    try {
+      console.info('[kodeks-account-ui] invoking select_account', selectionContext)
+      const nextSnapshot = await selectAccount(accountId)
+      console.info('[kodeks-account-ui] select_account resolved', {
+        requestedAccountId: accountId,
+        activeAccountId: nextSnapshot.account.active_account_id || null,
+        activeIdentity: nextSnapshot.account.identity || null,
+        savedAccounts: nextSnapshot.account.accounts.map((account) => ({
+          id: account.id,
+          label: account.label,
+          isActive: account.is_active,
+          state: account.state,
+        })),
+      })
+      setSnapshot(nextSnapshot)
+    } catch (nextError) {
+      console.info('[kodeks-account-ui] select_account failed', {
+        requestedAccountId: accountId,
+        error: stringifyError(nextError),
+      })
+      setError(stringifyError(nextError))
+      void hydrate()
+    } finally {
+      setAccountSwitchingId(null)
+    }
+  }
+
+  async function handleDisconnectAccount(accountId: string) {
+    setBusy(true)
+    setError(null)
+    try {
+      setSnapshot(await disconnectAccount(accountId))
+      setAccountMenuOpen(false)
+    } catch (nextError) {
+      setError(stringifyError(nextError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function handleAddAccount() {
+    setAccountMenuOpen(false)
+    setActiveSettingsSection('account')
+    setSettingsOpen(true)
+    if (busy || snapshot.account.login_in_progress) {
+      return
+    }
+    void handleLoginChatgpt()
   }
 
   async function handleRestart() {
@@ -1287,9 +1406,31 @@ function App() {
     }
   }
 
-  function handleOpenRateLimits() {
-    setActiveSettingsSection('account')
-    setSettingsOpen(true)
+  async function handleOpenRateLimits() {
+    setBusy(true)
+    setError(null)
+    try {
+      setSnapshot(await refreshRateLimits())
+    } catch (nextError) {
+      setError(stringifyError(nextError))
+    } finally {
+      setBusy(false)
+      setActiveSettingsSection('account')
+      setSettingsOpen(true)
+    }
+  }
+
+  async function handleOpenSignInLink(url?: string | null) {
+    if (!url) {
+      return
+    }
+
+    setError(null)
+    try {
+      await openExternalUrl(url)
+    } catch (nextError) {
+      setError(stringifyError(nextError))
+    }
   }
 
   function findShellHistoryIndex(direction: -1 | 1) {
@@ -1311,6 +1452,7 @@ function App() {
   const canGoBack = backHistoryIndex !== -1
   const canGoForward = forwardHistoryIndex !== -1
   const sidebarCollapsed = workspaceStore.ui.sidebarCollapsed
+  const activeSidebarAccount = sidebarAccounts.find((account) => account.isActive)
   const isMacOs =
     snapshot.connection.platform_os === 'macos' ||
     (typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform))
@@ -1336,6 +1478,58 @@ function App() {
       pushHistory: false,
       historyIndex: targetIndex,
     })
+  }
+
+  if (!hasUsableAccounts) {
+    return (
+      <>
+        <div className="flex h-[100svh] w-full flex-col overflow-hidden bg-[#09090b] font-sans text-neutral-200">
+          <TopBar
+            title={snapshot.app_name}
+            isMacOs={isMacOs}
+            minimal
+            sidebarCollapsed={sidebarCollapsed}
+            canGoBack={false}
+            canGoForward={false}
+            runState="idle"
+            changesCount={0}
+            changesDisabled
+            changesOpen={false}
+            codeReady={false}
+            codeOpen={false}
+            diagnosticsCount={0}
+            diagnosticsOpen={false}
+            onToggleSidebar={() => {}}
+            onGoBack={() => {}}
+            onGoForward={() => {}}
+            onToggleChanges={() => {}}
+            onToggleCode={() => {}}
+            onToggleDiagnostics={() => {}}
+          />
+
+          <ConnectAccountScreen
+            loginInProgress={snapshot.account.login_in_progress}
+            authUrl={snapshot.account.auth_url}
+            authCode={snapshot.account.auth_code}
+            loginError={snapshot.account.last_login_error || error || snapshot.connection.last_error}
+            busy={busy}
+            onStart={() => void handleLoginChatgpt()}
+            onOpenAuthUrl={(url) => void handleOpenSignInLink(url)}
+            onCancel={() => void handleCancelLogin()}
+          />
+        </div>
+
+        <SettingsModal
+          open={settingsOpen}
+          search={settingsSearch}
+          activeSection={activeSettingsSection}
+          sections={settingsSections}
+          onClose={() => setSettingsOpen(false)}
+          onSearchChange={setSettingsSearch}
+          onSectionChange={setActiveSettingsSection}
+        />
+      </>
+    )
   }
 
   const title = activeProjectViewRoot
@@ -1373,8 +1567,9 @@ function App() {
             groups={sidebarGroups}
             archivedThreads={archivedThreads}
             accountMenuOpen={accountMenuOpen}
-            accountLabel={snapshot.account.identity || 'workspace@agent.app'}
-            planLabel={humanizePlan(snapshot.account.plan)}
+            accounts={sidebarAccounts}
+            accountLabel={activeSidebarAccount?.label || snapshot.account.identity || 'workspace@agent.app'}
+            planLabel={activeSidebarAccount?.planLabel || humanizePlan(snapshot.account.plan)}
             onAddProject={() => void handleAddProject()}
             onNewThread={(rootPath) => void handleNewThread(rootPath)}
             onSelectProject={handleProjectSelect}
@@ -1385,12 +1580,15 @@ function App() {
             onRemoveProject={handleRemoveProject}
             onToggleGroup={handleToggleGroup}
             onToggleAccountMenu={() => setAccountMenuOpen((value) => !value)}
+            onSelectAccount={(accountId) => void handleSelectAccount(accountId)}
+            onAddAccount={handleAddAccount}
             onOpenSettings={() => {
               setAccountMenuOpen(false)
+              setActiveSettingsSection('account')
               setSettingsOpen(true)
             }}
             onSignOut={() => void handleLogout()}
-            signOutDisabled={busy}
+            signOutDisabled={busy || accountSwitchInProgress}
           />
 
           <div className="relative flex min-w-0 flex-1 overflow-hidden">
@@ -1463,7 +1661,9 @@ function App() {
                 permissionOptions={permissionOptions}
                 workspaceFiles={workspaceFiles}
                 liveTurn={Boolean(activeTurnId)}
-                authenticated={snapshot.account.status === 'authenticated'}
+                authenticated={hasUsableAccounts}
+                rateLimitDisplays={composerRateLimitDisplays}
+                showRateLimitsInline={workspaceStore.ui.showComposerRateLimits}
                 busy={busy}
                 compactModelMenu={compactModelMenu}
                 touchModelPreview={touchModelPreview}
@@ -1596,6 +1796,88 @@ function NoticeButton(props: {
     >
       {props.children}
     </button>
+  )
+}
+
+function ConnectAccountScreen(props: {
+  loginInProgress: boolean
+  authUrl?: string | null
+  authCode?: string | null
+  loginError?: string | null
+  busy: boolean
+  onStart: () => void
+  onOpenAuthUrl: (url: string) => void
+  onCancel: () => void
+}) {
+  const primaryLabel = props.loginInProgress && props.authUrl
+    ? 'Open in browser'
+    : 'Connect ChatGPT account'
+
+  return (
+    <main className="flex min-h-0 flex-1 items-center justify-center px-6 py-10">
+      <div className="flex w-full max-w-[28rem] flex-col items-center text-center">
+        <h1 className="text-[clamp(1.6rem,3.6vw,2.35rem)] font-semibold tracking-[-0.045em] text-neutral-100">
+          Connect ChatGPT account
+        </h1>
+
+        {props.authCode ? (
+          <div className="mt-4 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-[12px] text-neutral-300">
+            Code <span className="ml-1 shell-menlo text-neutral-100">{props.authCode}</span>
+          </div>
+        ) : null}
+
+        {props.loginError ? (
+          <p className="mt-4 max-w-[24rem] text-[13px] leading-[1.65] tracking-[-0.01em] text-red-200/80">
+            {props.loginError}
+          </p>
+        ) : null}
+
+        {props.authUrl ? (
+          <button
+            type="button"
+            onClick={() => props.onOpenAuthUrl(props.authUrl!)}
+            className="mt-5 w-full max-w-[30rem] rounded-[12px] border border-white/6 bg-white/[0.025] px-3.5 py-3 text-left transition hover:border-white/12 hover:bg-white/[0.04]"
+          >
+            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+              Sign-in link
+            </div>
+            <div className="mt-1.5 break-all text-[12px] leading-[1.55] tracking-[-0.01em] text-neutral-300">
+              {props.authUrl}
+            </div>
+          </button>
+        ) : null}
+
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={props.loginInProgress && props.authUrl ? () => props.onOpenAuthUrl(props.authUrl!) : props.onStart}
+            disabled={props.busy}
+            className={`inline-flex h-10 items-center justify-center rounded-[10px] px-4 text-[12px] font-medium tracking-[0.01em] transition ${
+              props.busy
+                ? 'cursor-not-allowed bg-white/10 text-neutral-500'
+                : 'bg-white text-black hover:opacity-92'
+            }`}
+          >
+            {primaryLabel}
+          </button>
+
+          {props.loginInProgress ? (
+            <button
+              type="button"
+              onClick={props.onCancel}
+              disabled={props.busy}
+              className={`inline-flex h-10 items-center justify-center rounded-[10px] px-4 text-[12px] font-medium tracking-[0.01em] transition ${
+                props.busy
+                  ? 'cursor-not-allowed text-neutral-600'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </main>
   )
 }
 
@@ -2404,49 +2686,165 @@ function buildBadgeLabel(
   }
 }
 
+function normalizeSavedAccounts(account: Snapshot['account']): SavedAccountView[] {
+  if (account.accounts.length > 0) {
+    return account.accounts
+  }
+
+  if (account.status !== 'authenticated' && !account.identity) {
+    return []
+  }
+
+  return [
+    {
+      id: account.active_account_id || account.identity || 'active-account',
+      mode: account.mode || 'unknown',
+      label: account.identity || 'Current account',
+      plan: account.plan || null,
+      state: account.status || 'connected',
+      is_active: true,
+      last_used_at: null,
+    },
+  ]
+}
+
+function formatAccountLastUsed(value?: number | null) {
+  if (!value || !Number.isFinite(value)) {
+    return null
+  }
+
+  const millis = value > 10_000_000_000 ? value : value * 1000
+  const date = new Date(millis)
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+
+  return `Last used ${new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)}`
+}
+
+function formatCreditsValue(rateLimits?: RateLimitsView | null) {
+  const credits = rateLimits?.credits
+  if (!credits) {
+    return null
+  }
+
+  if (credits.unlimited) {
+    return 'Unlimited'
+  }
+
+  const balance = credits.balance?.trim()
+  if (balance) {
+    const numericBalance = parseCreditsBalance(balance)
+    if (numericBalance !== null) {
+      if (numericBalance <= 0) {
+        return 'No credits'
+      }
+
+      const formatted = new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: numericBalance % 1 === 0 ? 0 : 2,
+        maximumFractionDigits: 2,
+      }).format(numericBalance)
+
+      if (looksLikeCurrencyBalance(balance)) {
+        const currencyPrefix = balance.match(/^[^\d-]+/)?.[0] || ''
+        const currencySuffix = balance.match(/[^\d]+$/)?.[0]?.trim() || ''
+
+        if (currencyPrefix) {
+          return `${currencyPrefix}${formatted}`
+        }
+        if (currencySuffix) {
+          return `${formatted} ${currencySuffix}`
+        }
+      }
+
+      return `${formatted} credits`
+    }
+
+    if (balance.toLowerCase() === 'zero') {
+      return 'No credits'
+    }
+
+    return balance
+  }
+
+  return credits.has_credits ? 'Credits available' : 'No credits'
+}
+
 function buildSettingsSections(
   snapshot: Snapshot,
-  apiKey: string,
-  onApiKeyInput: (value: string) => void,
-  onSignOut: () => void,
+  accountSwitchingId: string | null,
+  showComposerRateLimits: boolean,
+  onToggleComposerRateLimits: () => void,
+  onAddChatgptAccount: () => void,
+  onOpenAuthUrl: (url: string) => void,
+  onSelectAccount: (accountId: string) => void,
+  onDisconnectAccount: (accountId: string) => void,
+  onSignOutCurrent: () => void,
 ): SettingsSection[] {
+  const accounts = normalizeSavedAccounts(snapshot.account)
+  const manageableIds = new Set(snapshot.account.accounts.map((account) => account.id))
+  const switchingAccount =
+    accountSwitchingId ? accounts.find((account) => account.id === accountSwitchingId) || null : null
+
   return [
     {
       key: 'account',
-      label: 'Account',
+      label: 'Accounts',
       groups: [
         {
-          title: 'Session',
+          title: 'Accounts',
           rows: [
             {
-              kind: 'text',
-              label: 'Signed in as',
-              description: 'Identity currently active in the local Codex runtime.',
-              value: snapshot.account.identity || 'Not signed in',
-              disabled: true,
-            },
-            {
-              kind: 'text',
-              label: 'Plan',
-              description: 'Current account plan reported by Codex.',
-              value: humanizePlan(snapshot.account.plan),
-              disabled: true,
-            },
-            {
-              kind: 'text',
-              label: 'API key draft',
-              description: 'Staged locally until you submit sign-in from the main surface.',
-              value: apiKey,
-              placeholder: 'Paste API key',
-              inputType: 'password',
-              onInput: onApiKeyInput,
+              kind: 'accounts',
+              label: 'Saved accounts',
+              description: switchingAccount
+                ? `Switching to ${switchingAccount.label}. Keeping the current account active until the new session is ready.`
+                : 'Switch accounts.',
+              accounts: accounts.map((account) => ({
+                id: account.id,
+                label: account.label,
+                planLabel: humanizePlan(account.plan),
+                stateLabel:
+                  accountSwitchingId === account.id ? 'Switching' : titleCase(account.state || 'connected'),
+                isActive: account.is_active,
+                manageable: manageableIds.has(account.id),
+                lastUsedLabel: formatAccountLastUsed(account.last_used_at),
+                switching: accountSwitchingId === account.id,
+                actionsDisabled: Boolean(accountSwitchingId),
+              })),
+              emptyMessage: 'No saved accounts yet.',
+              loginInProgress: snapshot.account.login_in_progress,
+              switchInProgress: Boolean(accountSwitchingId),
+              switchingAccountLabel: switchingAccount?.label ?? null,
+              authNotice: snapshot.account.auth_notice,
+              authUrl: snapshot.account.auth_url,
+              authCode: snapshot.account.auth_code,
+              loginError: snapshot.account.last_login_error,
+              onAddChatgptAccount,
+              onOpenAuthUrl,
+              onSelectAccount,
+              onDisconnectAccount,
             },
           ],
         },
+        {
+          title: 'Rate limits',
+          rows: buildAccountRateLimitRows(
+            snapshot,
+            switchingAccount,
+            showComposerRateLimits,
+            onToggleComposerRateLimits,
+          ),
+        },
       ],
-      actionLabel: 'Sign out',
+      actionLabel: 'Sign out current',
       actionTone: 'danger',
-      onAction: onSignOut,
+      onAction: onSignOutCurrent,
     },
     {
       key: 'models',
@@ -2458,14 +2856,14 @@ function buildSettingsSections(
             {
               kind: 'text',
               label: 'Model',
-              description: 'Model currently advertised by the runtime.',
+              description: 'Current model.',
               value: snapshot.session.model || 'Codex default',
               disabled: true,
             },
             {
               kind: 'text',
               label: 'Reasoning effort',
-              description: 'Current reasoning effort remembered by Kodeks.',
+              description: 'Current effort.',
               value: formatReasoningEffortLabel(snapshot.session.reasoning_effort || 'medium'),
               disabled: true,
             },
@@ -2474,6 +2872,350 @@ function buildSettingsSections(
       ],
     },
   ]
+}
+
+function buildAccountRateLimitRows(
+  snapshot: Snapshot,
+  switchingAccount: SavedAccountView | null,
+  showComposerRateLimits: boolean,
+  onToggleComposerRateLimits: () => void,
+): SettingsRow[] {
+  const rateLimitItems = buildRateLimitSummaryItems(snapshot.account.rate_limits)
+  const currentAccountLabel = snapshot.account.identity || 'current account'
+
+  return [
+    {
+      kind: 'rateLimits',
+      label: 'Active account rate limits',
+      description:
+        switchingAccount
+          ? `Showing ${currentAccountLabel} limits while switching to ${switchingAccount.label}.`
+          : rateLimitItems.length > 0
+            ? 'Credits and reset windows for the active account.'
+            : 'Waiting on runtime data.',
+      planLabel: snapshot.account.rate_limits?.plan
+        ? humanizePlan(snapshot.account.rate_limits.plan)
+        : undefined,
+      composerVisible: showComposerRateLimits,
+      onToggleComposerVisible: onToggleComposerRateLimits,
+      buckets: rateLimitItems.map((item) => ({
+        key: item.key,
+        label: item.label,
+        primary: item.primary,
+        secondary: item.secondary,
+        tone: item.tone,
+      })),
+      emptyMessage: switchingAccount
+        ? `Loading rate limits for ${switchingAccount.label}.`
+        : 'No active account rate limits yet.',
+    },
+  ]
+}
+
+function buildRateLimitSummaryItems(rateLimits?: RateLimitsView | null): RateLimitSummaryItem[] {
+  if (!rateLimits) {
+    return []
+  }
+
+  const items: RateLimitSummaryItem[] = []
+  const creditsValue = formatCreditsValue(rateLimits)
+  if (rateLimits.credits && creditsValue) {
+    items.push({
+      key: 'credits',
+      kind: 'credits',
+      label: 'credits',
+      primary: creditsValue,
+      secondary: describeCredits(rateLimits.credits),
+      reset: null,
+      tone: creditsTone(rateLimits.credits),
+    })
+  }
+
+  items.push(
+    ...rateLimits.buckets.map((bucket) => ({
+      key: bucket.key,
+      kind: 'bucket' as const,
+      label: formatRateLimitBucketLabel(bucket) || bucket.label || titleCase(bucket.key || 'rate limit'),
+      primary: formatRateLimitPrimaryValue(bucket),
+      secondary: describeRateLimitBucket(bucket),
+      reset: bucket.reset_at ? formatRateLimitReset(bucket.reset_at) : null,
+      tone: rateLimitTone(bucket),
+    })),
+  )
+
+  return items
+}
+
+function formatRateLimitPrimaryValue(bucket: {
+  remaining?: number | null
+  limit?: number | null
+  used?: number | null
+  used_percent?: number | null
+}) {
+  if (typeof bucket.remaining === 'number') {
+    return `${formatRateLimitNumber(bucket.remaining)} left`
+  }
+
+  if (typeof bucket.limit === 'number' && typeof bucket.used === 'number') {
+    return `${formatRateLimitNumber(Math.max(bucket.limit - bucket.used, 0))} left`
+  }
+
+  if (typeof bucket.used_percent === 'number') {
+    return `${formatRateLimitNumber(Math.max(100 - bucket.used_percent, 0))}% left`
+  }
+
+  if (typeof bucket.used === 'number') {
+    return `${formatRateLimitNumber(bucket.used)} used`
+  }
+
+  return 'Remaining unavailable'
+}
+
+function describeRateLimitBucket(bucket: {
+  remaining?: number | null
+  limit?: number | null
+  used?: number | null
+  used_percent?: number | null
+  reset_at?: string | null
+  window_minutes?: number | null
+}) {
+  const details: string[] = []
+  if (bucket.reset_at) {
+    details.push(`Resets ${formatRateLimitReset(bucket.reset_at)}`)
+  }
+  if (typeof bucket.window_minutes === 'number') {
+    details.push(`Window ${formatRateLimitWindow(bucket.window_minutes)}`)
+  }
+  if (typeof bucket.limit === 'number') {
+    details.push(`Limit ${formatRateLimitNumber(bucket.limit)}`)
+  }
+  if (typeof bucket.used === 'number' && details.length === 0) {
+    details.push(`Used ${formatRateLimitNumber(bucket.used)}`)
+  }
+  if (typeof bucket.used_percent === 'number' && details.length === 0) {
+    details.push(`${formatRateLimitNumber(Math.max(100 - bucket.used_percent, 0))}% left`)
+  }
+
+  if (details.length > 0) {
+    return details.join(' • ')
+  }
+
+  if (typeof bucket.remaining !== 'number') {
+    return 'No remaining data yet.'
+  }
+
+  return 'Remaining available.'
+}
+
+function rateLimitTone(bucket: Pick<RateLimitBucketView, 'remaining' | 'limit' | 'used_percent'>) {
+  if (typeof bucket.remaining === 'number' && typeof bucket.limit === 'number' && bucket.limit > 0) {
+    const ratio = bucket.remaining / bucket.limit
+    if (ratio <= 0.15) {
+      return 'warning' as const
+    }
+    return 'calm' as const
+  }
+
+  if (typeof bucket.used_percent === 'number') {
+    if (bucket.used_percent >= 85) {
+      return 'warning' as const
+    }
+    if (bucket.used_percent <= 60) {
+      return 'calm' as const
+    }
+  }
+
+  return 'muted' as const
+}
+
+function creditsTone(credits: NonNullable<RateLimitsView['credits']>) {
+  if (credits.unlimited) {
+    return 'calm' as const
+  }
+
+  const balance = credits.balance?.trim()
+  if (balance) {
+    const numeric = parseCreditsBalance(balance)
+    if (numeric !== null) {
+      return numeric > 0 ? ('calm' as const) : ('warning' as const)
+    }
+    return 'calm' as const
+  }
+
+  return credits.has_credits ? ('calm' as const) : ('warning' as const)
+}
+
+function describeCredits(credits: NonNullable<RateLimitsView['credits']>) {
+  if (credits.unlimited) {
+    return 'Included with your plan.'
+  }
+
+  if (credits.balance?.trim()) {
+    const numeric = parseCreditsBalance(credits.balance)
+    if (numeric !== null && numeric <= 0) {
+      return 'No credit balance.'
+    }
+    return 'Current credit balance.'
+  }
+
+  return credits.has_credits ? 'Credits available.' : 'No credit balance.'
+}
+
+function buildComposerRateLimitDisplays(rateLimits?: RateLimitsView | null): ComposerRateLimitDisplay[] | null {
+  const items = buildRateLimitSummaryItems(rateLimits)
+  if (items.length === 0) {
+    return null
+  }
+
+  const prioritized = [...items].sort((left, right) => {
+    if (left.kind === right.kind) {
+      return 0
+    }
+    return left.kind === 'bucket' ? -1 : 1
+  })
+
+  return prioritized.slice(0, 2).map((item) => ({
+    label: item.label,
+    value: item.primary,
+    reset: item.reset || null,
+    tone: item.tone,
+  }))
+}
+
+function looksLikeCurrencyBalance(value: string) {
+  return /^[^\d-]+/.test(value.trim()) || /[A-Za-z]{3}$/.test(value.trim())
+}
+
+function parseCreditsBalance(value: string) {
+  const normalized = value.trim().replace(/,/g, '')
+  if (!normalized) {
+    return null
+  }
+
+  const numeric = Number(normalized.replace(/[^0-9.-]/g, ''))
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+function buildSidebarAccounts(
+  accounts: SavedAccountView[],
+  activeAccountId: string | null,
+  fallbackIdentity: string | null,
+  fallbackPlan: string | null,
+  switchingAccountId: string | null,
+): SidebarAccount[] {
+  const normalized =
+    accounts.length > 0
+      ? accounts
+      : fallbackIdentity
+        ? [
+            {
+              id: activeAccountId || fallbackIdentity,
+              mode: 'unknown',
+              label: fallbackIdentity,
+              plan: fallbackPlan,
+              state: 'authenticated',
+              is_active: true,
+              last_used_at: null,
+            } as SavedAccountView,
+          ]
+        : []
+
+  if (normalized.length === 0) {
+    return []
+  }
+
+  const resolvedActiveId =
+    activeAccountId || normalized.find((account) => account.is_active)?.id || normalized[0]?.id || null
+
+  const ordered = [...normalized].sort((left, right) => {
+    if (left.id === resolvedActiveId && right.id !== resolvedActiveId) {
+      return -1
+    }
+    if (right.id === resolvedActiveId && left.id !== resolvedActiveId) {
+      return 1
+    }
+    return (right.last_used_at || 0) - (left.last_used_at || 0)
+  })
+
+  return ordered.map((account) => ({
+    id: account.id,
+    label: account.label,
+    planLabel: humanizePlan(account.plan),
+    isActive: Boolean(resolvedActiveId) && account.id === resolvedActiveId,
+    switching: switchingAccountId === account.id,
+  }))
+}
+
+function formatRateLimitWindow(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 'n/a'
+  }
+  if (Math.round(value) === 10080) {
+    return 'weekly'
+  }
+  if (value >= 60) {
+    const hours = value / 60
+    if (Number.isInteger(hours)) {
+      return `${hours}h`
+    }
+    return `${hours.toFixed(1)}h`
+  }
+  return `${Math.round(value)}m`
+}
+
+function formatRateLimitBucketLabel(bucket: {
+  label?: string | null
+  window_minutes?: number | null
+}) {
+  if (typeof bucket.window_minutes === 'number') {
+    return formatRateLimitWindow(bucket.window_minutes)
+  }
+
+  if (bucket.label) {
+    return bucket.label.toLowerCase()
+  }
+
+  return null
+}
+
+function formatRateLimitReset(value: string) {
+  const trimmed = value.trim()
+  if (/^\d+$/.test(trimmed)) {
+    const numeric = Number(trimmed)
+    if (Number.isFinite(numeric)) {
+      const millis = numeric < 1_000_000_000_000 ? numeric * 1000 : numeric
+      const date = new Date(millis)
+      if (!Number.isNaN(date.getTime())) {
+        return new Intl.DateTimeFormat('en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        }).format(date)
+      }
+    }
+  }
+
+  const timestamp = Date.parse(trimmed)
+  if (Number.isNaN(timestamp)) {
+    return value
+  }
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(timestamp))
+}
+
+function formatRateLimitNumber(value: number) {
+  if (!Number.isFinite(value)) {
+    return '0'
+  }
+  if (Math.abs(value - Math.round(value)) < 0.01) {
+    return Math.round(value).toLocaleString('en-US')
+  }
+  return value.toFixed(1)
 }
 
 function fallbackModels(snapshot: Snapshot): ModelOption[] {

@@ -35,6 +35,9 @@ impl Default for SessionSnapshot {
                 identity: None,
                 plan: None,
                 rate_limit_summary: None,
+                rate_limits: None,
+                active_account_id: None,
+                accounts: Vec::new(),
                 requires_openai_auth: false,
                 login_in_progress: false,
                 login_id: None,
@@ -74,6 +77,9 @@ pub struct AccountSnapshot {
     pub identity: Option<String>,
     pub plan: Option<String>,
     pub rate_limit_summary: Option<String>,
+    pub rate_limits: Option<AccountRateLimits>,
+    pub active_account_id: Option<String>,
+    pub accounts: Vec<SavedAccountView>,
     pub requires_openai_auth: bool,
     pub login_in_progress: bool,
     pub login_id: Option<String>,
@@ -81,6 +87,43 @@ pub struct AccountSnapshot {
     pub auth_notice: Option<String>,
     pub auth_url: Option<String>,
     pub auth_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedAccountView {
+    pub id: String,
+    pub mode: String,
+    pub label: String,
+    pub plan: Option<String>,
+    pub state: String,
+    pub is_active: bool,
+    pub last_used_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountRateLimits {
+    pub plan: Option<String>,
+    pub credits: Option<AccountCredits>,
+    pub buckets: Vec<AccountRateLimitBucket>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountCredits {
+    pub has_credits: bool,
+    pub unlimited: bool,
+    pub balance: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountRateLimitBucket {
+    pub key: String,
+    pub label: String,
+    pub remaining: Option<f64>,
+    pub limit: Option<f64>,
+    pub used: Option<f64>,
+    pub used_percent: Option<f64>,
+    pub reset_at: Option<String>,
+    pub window_minutes: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +176,9 @@ pub struct ThreadSummary {
     pub branch: Option<String>,
     pub presence: String,
     pub turn_count: usize,
+    pub last_account_id: Option<String>,
+    pub last_account_label: Option<String>,
+    pub last_account_plan: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

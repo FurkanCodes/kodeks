@@ -20,6 +20,7 @@ export type WorkspaceStore = {
 
 export type WorkspaceUiState = {
   sidebarCollapsed: boolean
+  showComposerRateLimits: boolean
 }
 
 const STORAGE_KEY = 'kodeks.workspace-store.v1'
@@ -30,6 +31,7 @@ const EMPTY_STORE: WorkspaceStore = {
   threadPreferences: {},
   ui: {
     sidebarCollapsed: false,
+    showComposerRateLimits: true,
   },
 }
 
@@ -56,6 +58,8 @@ export function loadWorkspaceStore(): WorkspaceStore {
         parsed.ui && typeof parsed.ui === 'object'
           ? {
               sidebarCollapsed: Boolean((parsed.ui as Partial<WorkspaceUiState>).sidebarCollapsed),
+              showComposerRateLimits:
+                (parsed.ui as Partial<WorkspaceUiState>).showComposerRateLimits ?? EMPTY_STORE.ui.showComposerRateLimits,
             }
           : { ...EMPTY_STORE.ui },
     }
@@ -149,6 +153,12 @@ export function setThreadPreference(
 export function setSidebarCollapsed(store: WorkspaceStore, collapsed: boolean) {
   const next = cloneStore(store)
   next.ui.sidebarCollapsed = collapsed
+  return next
+}
+
+export function setComposerRateLimitsVisible(store: WorkspaceStore, visible: boolean) {
+  const next = cloneStore(store)
+  next.ui.showComposerRateLimits = visible
   return next
 }
 
