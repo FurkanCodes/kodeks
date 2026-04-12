@@ -1,14 +1,21 @@
+import { AnimatePresence, LazyMotion, domAnimation, m, useReducedMotion } from 'motion/react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import type { SidebarGroup, SidebarThread } from '../../lib/shellState'
 import { LoadingSpinner } from './LoadingSpinner'
 import {
   ArchiveIcon,
   ChevronIcon,
+  ClockIcon,
+  FolderGitIcon,
   FolderOpenIcon,
+  FolderPlusIcon,
   LogoutIcon,
   MoreIcon,
   PlusIcon,
+  PuzzleIcon,
+  SearchIcon,
   SettingsIcon,
+  SquarePenIcon,
   TrashIcon,
   UndoIcon,
 } from './icons'
@@ -33,6 +40,9 @@ type SidebarProps = {
   planLabel: string
   onAddProject: () => void
   onNewThread: (rootPath?: string | null) => void
+  onSearch: () => void
+  onOpenPlugins: () => void
+  onOpenAutomations: () => void
   onSelectProject: (rootPath: string) => void
   onSelectThread: (threadId: string) => void
   onArchiveThread: (threadId: string) => void
@@ -48,10 +58,152 @@ type SidebarProps = {
   signOutDisabled: boolean
 }
 
-function SidebarActionButton(props: {
+const THREAD_PREVIEW_LIMIT = 5
+const SIDEBAR_FADE_EASE = [0.16, 1, 0.3, 1] as const
+
+const THREAD_GROUP_VARIANTS = {
+  hidden: {
+    opacity: 0,
+    y: -6,
+    transition: {
+      duration: 0.11,
+      ease: SIDEBAR_FADE_EASE,
+    },
+  },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.18,
+      ease: SIDEBAR_FADE_EASE,
+    },
+  },
+} as const
+
+const THREAD_GROUP_REDUCED_VARIANTS = {
+  hidden: {
+    opacity: 0,
+    y: 0,
+    transition: {
+      duration: 0.01,
+    },
+  },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.01,
+    },
+  },
+} as const
+
+const THREAD_MENU_VARIANTS = {
+  hidden: {
+    opacity: 0,
+    y: -4,
+    scale: 0.985,
+    transition: {
+      duration: 0.1,
+      ease: SIDEBAR_FADE_EASE,
+    },
+  },
+  visible: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: {
+      duration: 0.14,
+      ease: SIDEBAR_FADE_EASE,
+    },
+  },
+} as const
+
+const THREAD_MENU_REDUCED_VARIANTS = {
+  hidden: {
+    opacity: 0,
+    y: 0,
+    scale: 1,
+    transition: {
+      duration: 0.01,
+    },
+  },
+  visible: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: {
+      duration: 0.01,
+    },
+  },
+} as const
+
+const THREAD_ROW_VARIANTS = {
+  hidden: {
+    opacity: 0,
+    y: -5,
+    scale: 0.992,
+    transition: {
+      duration: 0.1,
+      ease: SIDEBAR_FADE_EASE,
+    },
+  },
+  visible: (index: number) => ({
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: {
+      delay: Math.min(index, 5) * 0.02,
+      duration: 0.16,
+      ease: SIDEBAR_FADE_EASE,
+    },
+  }),
+} as const
+
+const THREAD_ROW_REDUCED_VARIANTS = {
+  hidden: {
+    opacity: 0,
+    y: 0,
+    scale: 1,
+    transition: {
+      duration: 0.01,
+    },
+  },
+  visible: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: {
+      duration: 0.01,
+    },
+  },
+} as const
+
+const THREAD_ROW_LAYOUT_TRANSITION = {
+  duration: 0.18,
+  ease: SIDEBAR_FADE_EASE,
+} as const
+
+function SidebarUtilityButton(props: {
   label: string
-  active?: boolean
-  disabled?: boolean
+  icon: typeof SquarePenIcon
+  onClick?: () => void
+}) {
+  const Icon = props.icon
+
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      className="flex h-8 w-full items-center gap-2.5 rounded-[10px] px-3 text-left text-[color:var(--color-shell-text)] transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]"
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0 text-[color:var(--color-shell-faint)]" />
+      <span className="text-[13.5px] font-medium tracking-[-0.018em]">{props.label}</span>
+    </button>
+  )
+}
+
+function HeaderIconButton(props: {
+  label: string
   icon: typeof PlusIcon
   onClick?: () => void
 }) {
@@ -60,16 +212,11 @@ function SidebarActionButton(props: {
   return (
     <button
       type="button"
-      className={`group flex h-[34px] w-full items-center gap-2.5 rounded-[9px] px-3 text-left transition-colors ${
-        props.active
-          ? 'text-neutral-300'
-          : 'text-neutral-400 hover:bg-white/5 hover:text-neutral-200'
-      } ${props.disabled ? 'cursor-default opacity-85' : ''}`}
+      title={props.label}
+      className="flex size-7 items-center justify-center rounded-[8px] text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
       onClick={props.onClick}
-      disabled={props.disabled}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" />
-      <span className="text-[13px] font-medium tracking-[-0.02em]">{props.label}</span>
     </button>
   )
 }
@@ -89,11 +236,13 @@ function RailIconButton(props: {
       onClick={props.onClick}
       className={`relative flex size-11 items-center justify-center rounded-[13px] transition ${
         props.active
-          ? 'bg-white/[0.08] text-neutral-100'
-          : 'text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200'
+          ? 'bg-[color:var(--color-shell-elevated)] text-[color:var(--color-shell-primary)]'
+          : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]'
       }`}
     >
-      {props.active ? <span className="absolute left-0 top-1/2 h-5 w-px -translate-y-1/2 bg-white/70" /> : null}
+      {props.active ? (
+        <span className="absolute left-0 top-1/2 h-5 w-px -translate-y-1/2 bg-[color:var(--color-shell-primary)]" />
+      ) : null}
       <Icon className="h-4 w-4" />
     </button>
   )
@@ -113,10 +262,10 @@ function FlyoutButton(props: {
       type="button"
       className={`group flex w-full items-center justify-between px-3 py-1.5 text-[12px] transition-colors ${
         props.disabled
-          ? 'cursor-default text-neutral-400 opacity-80'
+          ? 'cursor-default text-[color:var(--color-shell-faint)] opacity-80'
           : props.danger
-            ? 'text-neutral-400 hover:bg-red-500/10 hover:text-white'
-            : 'text-neutral-400 hover:bg-white/5 hover:text-white'
+            ? 'text-[color:var(--color-shell-muted)] hover:bg-red-500/10 hover:text-[color:var(--color-shell-primary)]'
+            : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]'
       }`}
       onClick={props.onClick}
       disabled={props.disabled}
@@ -152,15 +301,15 @@ function AccountFlyout(props: {
 
   return (
     <div
-      className={`absolute z-50 rounded-[13px] bg-[#18181b] py-1 shadow-[0_24px_80px_rgba(0,0,0,0.45)] ${
+      className={`absolute z-50 rounded-[13px] border border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-elevated)] py-1 shadow-[var(--shadow-shell-elevated)] ${
         props.collapsed ? 'bottom-2 left-full ml-2 w-[206px]' : 'bottom-full left-2.5 mb-2 w-[206px]'
       }`}
     >
       <div className="mb-1 px-3 py-2">
-        <div className="truncate text-[13px] font-medium text-neutral-200">{activeAccount.label}</div>
-        <div className="text-[11.5px] text-neutral-500">{activeAccount.planLabel}</div>
+        <div className="truncate text-[13px] font-medium text-[color:var(--color-shell-primary)]">{activeAccount.label}</div>
+        <div className="text-[11.5px] text-[color:var(--color-shell-faint)]">{activeAccount.planLabel}</div>
         {switchingAccount ? (
-          <div className="mt-1.5 flex items-center gap-1.5 text-[10.5px] text-neutral-300">
+          <div className="mt-1.5 flex items-center gap-1.5 text-[10.5px] text-[color:var(--color-shell-text)]">
             <LoadingSpinner size={11} strokeWidth={1.4} />
             <span className="truncate">
               {switchingAccount.id === activeAccount.id
@@ -173,7 +322,7 @@ function AccountFlyout(props: {
 
       {switchableAccounts.length > 0 ? (
         <div className="mb-1 space-y-0.5 px-3 py-1">
-          <div className="px-0.5 text-[10px] font-semibold uppercase tracking-[0.11em] text-neutral-500">
+          <div className="px-0.5 text-[10px] font-semibold uppercase tracking-[0.11em] text-[color:var(--color-shell-faint)]">
             Switch account
           </div>
           {switchableAccounts.map((account) => (
@@ -182,8 +331,8 @@ function AccountFlyout(props: {
               type="button"
               className={`flex w-full items-center justify-between rounded-[7px] px-2.5 py-1.5 text-left text-[11.5px] transition ${
                 props.signOutDisabled
-                  ? 'cursor-not-allowed text-neutral-500'
-                  : 'text-neutral-300 hover:bg-white/5 hover:text-white'
+                  ? 'cursor-not-allowed text-[color:var(--color-shell-faint)]'
+                  : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]'
               }`}
               onClick={() => {
                 console.info('[kodeks-account-ui] sidebar switch click', {
@@ -197,12 +346,12 @@ function AccountFlyout(props: {
               <span className="truncate pr-2">{account.label}</span>
               <span className="shrink-0">
                 {account.switching ? (
-                  <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.08em] text-neutral-300">
+                  <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.08em] text-[color:var(--color-shell-text)]">
                     <LoadingSpinner size={10} strokeWidth={1.35} />
                     <span>Switching...</span>
                   </span>
                 ) : (
-                  <span className="text-[10px] uppercase tracking-[0.08em] text-neutral-500">
+                  <span className="text-[10px] uppercase tracking-[0.08em] text-[color:var(--color-shell-faint)]">
                     {account.planLabel}
                   </span>
                 )}
@@ -225,7 +374,7 @@ function AccountFlyout(props: {
         onClick={props.onOpenSettings}
       />
 
-      <div className="mx-3 my-1.5 h-px bg-white/[0.04]" />
+      <div className="mx-3 my-1.5 h-px bg-[color:var(--color-shell-border)]" />
 
       <FlyoutButton
         label="Sign out current"
@@ -239,10 +388,19 @@ function AccountFlyout(props: {
 }
 
 function MenuSurface(props: { children: ReactNode }) {
+  const prefersReducedMotion = useReducedMotion()
+
   return (
-    <div className="absolute right-0 top-full z-40 mt-1 min-w-[164px] rounded-[11px] bg-[#18181b] p-1 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
+    <m.div
+      initial="hidden"
+      animate="visible"
+      exit="hidden"
+      variants={prefersReducedMotion ? THREAD_MENU_REDUCED_VARIANTS : THREAD_MENU_VARIANTS}
+      className="absolute right-0 top-full z-40 mt-1 min-w-[164px] rounded-[11px] border border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-elevated)] p-1 shadow-[var(--shadow-shell-elevated)]"
+      style={prefersReducedMotion ? undefined : { transformOrigin: 'top right', willChange: 'opacity, transform' }}
+    >
       {props.children}
-    </div>
+    </m.div>
   )
 }
 
@@ -260,7 +418,7 @@ function MenuButton(props: {
       className={`flex w-full items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-[11.5px] transition ${
         props.danger
           ? 'text-red-200/80 hover:bg-red-500/10 hover:text-red-100'
-          : 'text-neutral-300 hover:bg-white/5 hover:text-white'
+          : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]'
       }`}
       onClick={props.onClick}
     >
@@ -270,10 +428,103 @@ function MenuButton(props: {
   )
 }
 
+function CollapsibleBody(props: {
+  open: boolean
+  children: ReactNode
+  className?: string
+}) {
+  const prefersReducedMotion = useReducedMotion()
+
+  return (
+    <AnimatePresence initial={false}>
+      {props.open ? (
+        <m.div
+          key="expanded"
+          initial="hidden"
+          animate="visible"
+          exit="hidden"
+          variants={prefersReducedMotion ? THREAD_GROUP_REDUCED_VARIANTS : THREAD_GROUP_VARIANTS}
+          className={props.className}
+          style={prefersReducedMotion ? undefined : { transformOrigin: 'top left', willChange: 'opacity, transform' }}
+        >
+          {props.children}
+        </m.div>
+      ) : null}
+    </AnimatePresence>
+  )
+}
+
+function ThreadRowMotion(props: {
+  rowKey: string
+  index: number
+  children: ReactNode
+  className?: string
+}) {
+  const prefersReducedMotion = useReducedMotion()
+
+  return (
+    <m.div
+      layout={!prefersReducedMotion}
+      layoutDependency={prefersReducedMotion ? undefined : props.rowKey}
+      custom={props.index}
+      initial="hidden"
+      animate="visible"
+      exit="hidden"
+      variants={prefersReducedMotion ? THREAD_ROW_REDUCED_VARIANTS : THREAD_ROW_VARIANTS}
+      transition={prefersReducedMotion ? undefined : THREAD_ROW_LAYOUT_TRANSITION}
+      className={props.className}
+      style={prefersReducedMotion ? undefined : { willChange: 'opacity, transform' }}
+    >
+      {props.children}
+    </m.div>
+  )
+}
+
+function formatRelativeThreadAge(updatedAt: number) {
+  const timestamp = updatedAt > 1_000_000_000_000 ? updatedAt : updatedAt * 1000
+  const deltaMs = Date.now() - timestamp
+
+  if (!Number.isFinite(deltaMs) || deltaMs <= 0) {
+    return 'now'
+  }
+
+  const minutes = Math.floor(deltaMs / 60_000)
+  if (minutes < 1) {
+    return 'now'
+  }
+  if (minutes < 60) {
+    return `${minutes}m`
+  }
+
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) {
+    return `${hours}h`
+  }
+
+  const days = Math.floor(hours / 24)
+  if (days < 7) {
+    return `${days}d`
+  }
+
+  const weeks = Math.floor(days / 7)
+  if (weeks < 5) {
+    return `${weeks}w`
+  }
+
+  const months = Math.floor(days / 30)
+  if (months < 12) {
+    return `${months}mo`
+  }
+
+  return `${Math.floor(days / 365)}y`
+}
+
 export function Sidebar(props: SidebarProps) {
   const [projectMenuKey, setProjectMenuKey] = useState<string | null>(null)
   const [threadMenuId, setThreadMenuId] = useState<string | null>(null)
   const [archivedExpanded, setArchivedExpanded] = useState(false)
+  const [expandedThreadGroups, setExpandedThreadGroups] = useState<Record<string, boolean>>({})
+  const prefersReducedMotion = useReducedMotion()
 
   const archivedLabel = useMemo(
     () => `${props.archivedThreads.length} ${props.archivedThreads.length === 1 ? 'thread' : 'threads'}`,
@@ -285,6 +536,16 @@ export function Sidebar(props: SidebarProps) {
     [props.groups],
   )
 
+  const visibleGroups = useMemo(
+    () => props.groups.filter((group) => group.rootPath || group.threads.length > 0),
+    [props.groups],
+  )
+
+  const activeProjectRoot =
+    props.groups.find((group) => group.active && group.rootPath)?.rootPath ||
+    props.groups.find((group) => group.rootPath)?.rootPath ||
+    null
+
   useEffect(() => {
     if (!props.collapsed) {
       return
@@ -293,34 +554,366 @@ export function Sidebar(props: SidebarProps) {
     setProjectMenuKey(null)
     setThreadMenuId(null)
     setArchivedExpanded(false)
+    setExpandedThreadGroups({})
   }, [props.collapsed])
 
   if (props.collapsed) {
     return (
-      <aside className="relative flex h-full w-[72px] shrink-0 flex-col items-center bg-[#101012] py-3 transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
-        <div className="flex flex-col items-center gap-2">
-          <div className="flex size-11 items-center justify-center rounded-[14px] bg-white/[0.035]">
-            <span className="text-[11px] font-bold leading-none text-white">◆</span>
+      <LazyMotion features={domAnimation}>
+        <aside className="relative flex h-full w-[72px] shrink-0 flex-col items-center border-r border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-panel)] py-3 transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+          <div className="flex flex-col items-center gap-2">
+            <div className="flex size-11 items-center justify-center rounded-[14px] border border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-elevated)]">
+              <span className="text-[11px] font-bold leading-none text-[color:var(--color-shell-primary)]">◆</span>
+            </div>
+            <RailIconButton label="Add project" icon={PlusIcon} onClick={props.onAddProject} />
           </div>
-          <RailIconButton label="Add project" icon={PlusIcon} onClick={props.onAddProject} />
+
+          <div className="shell-scroll-none mt-4 flex flex-1 flex-col items-center gap-2 overflow-y-auto px-2">
+            {railGroups.map((group) => (
+              <RailIconButton
+                key={group.key}
+                label={group.label}
+                icon={FolderOpenIcon}
+                active={group.active}
+                onClick={() => group.rootPath && props.onSelectProject(group.rootPath)}
+              />
+            ))}
+          </div>
+
+          <div className="relative mt-3">
+            {props.accountMenuOpen ? (
+              <AccountFlyout
+                collapsed
+                accounts={props.accounts}
+                accountLabel={props.accountLabel}
+                planLabel={props.planLabel}
+                onSelectAccount={props.onSelectAccount}
+                onAddAccount={props.onAddAccount}
+                onOpenSettings={props.onOpenSettings}
+                onSignOut={props.onSignOut}
+                signOutDisabled={props.signOutDisabled}
+              />
+            ) : null}
+
+            <RailIconButton label="Settings" icon={SettingsIcon} onClick={props.onToggleAccountMenu} />
+          </div>
+        </aside>
+      </LazyMotion>
+    )
+  }
+
+  return (
+    <LazyMotion features={domAnimation}>
+      <aside className="relative flex h-full w-[296px] shrink-0 flex-col border-r border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-panel)] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+        <div className="space-y-0.5 px-2.5 pb-3 pt-3">
+          <SidebarUtilityButton
+            label="New chat"
+            icon={SquarePenIcon}
+            onClick={() => props.onNewThread(activeProjectRoot)}
+          />
+          <SidebarUtilityButton label="Search" icon={SearchIcon} onClick={props.onSearch} />
+          <SidebarUtilityButton label="Plugins" icon={PuzzleIcon} onClick={props.onOpenPlugins} />
+          <SidebarUtilityButton
+            label="Automations"
+            icon={ClockIcon}
+            onClick={props.onOpenAutomations}
+          />
         </div>
 
-        <div className="shell-scroll-none mt-4 flex flex-1 flex-col items-center gap-2 overflow-y-auto px-2">
-          {railGroups.map((group) => (
-            <RailIconButton
-              key={group.key}
-              label={group.label}
-              icon={FolderOpenIcon}
-              active={group.active}
-              onClick={() => group.rootPath && props.onSelectProject(group.rootPath)}
-            />
-          ))}
+      <div className="flex items-center justify-between px-3.5 pb-2.5 pt-4">
+        <span className="text-[13px] font-medium tracking-[-0.015em] text-[color:var(--color-shell-faint)]">Threads</span>
+        <div className="flex items-center gap-1">
+          <HeaderIconButton label="Add project" icon={FolderPlusIcon} onClick={props.onAddProject} />
+          <HeaderIconButton
+            label="New thread"
+            icon={SquarePenIcon}
+            onClick={() => props.onNewThread(activeProjectRoot)}
+          />
         </div>
+      </div>
 
-        <div className="relative mt-3">
+      <div className="shell-scroll-none flex-1 overflow-y-auto px-2.5 pb-3">
+        <div className="space-y-2.5">
+          {visibleGroups.map((group) => {
+            const groupExpanded = group.expanded
+            const threadsExpanded = expandedThreadGroups[group.key] ?? false
+            const hasOverflow = group.threads.length > THREAD_PREVIEW_LIMIT
+            const visibleThreads = threadsExpanded
+              ? group.threads
+              : group.threads.slice(0, THREAD_PREVIEW_LIMIT)
+            const hasThreads = group.threads.length > 0
+            const toggleGroup = () => {
+              props.onToggleGroup(group.key)
+              setProjectMenuKey(null)
+              setThreadMenuId(null)
+            }
+
+            return (
+              <section className="space-y-0.5" key={group.key}>
+                <div className="group relative flex items-center justify-between gap-2 px-1.5">
+                  <button
+                    type="button"
+                    aria-expanded={hasThreads ? groupExpanded : undefined}
+                    className={`flex min-w-0 flex-1 items-center gap-1 rounded-[8px] px-1.5 py-0.5 text-left transition ${
+                      group.active
+                        ? 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-sidebar-accent)]'
+                        : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]'
+                    }`}
+                    onClick={() => {
+                      if (hasThreads) {
+                        toggleGroup()
+                        return
+                      }
+                      if (group.rootPath) {
+                        props.onSelectProject(group.rootPath)
+                      }
+                    }}
+                    title={
+                      hasThreads
+                        ? `${groupExpanded ? 'Collapse' : 'Expand'} ${group.label}`
+                        : group.rootPath || group.label
+                    }
+                  >
+                    <span
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[7px] text-[color:var(--color-shell-faint)]"
+                      aria-hidden="true"
+                    >
+                      <FolderGitIcon className="h-3.5 w-3.5 shrink-0" />
+                    </span>
+                    <span className="min-w-0 truncate text-[13px] font-medium tracking-[-0.018em]">
+                      {group.label}
+                    </span>
+                  </button>
+
+                  <div className="flex shrink-0 items-center gap-1">
+                    {!groupExpanded && hasThreads ? (
+                      <span className="text-[11px] font-medium tracking-[-0.01em] text-[color:var(--color-shell-faint)]">
+                        {group.threads.length}
+                      </span>
+                    ) : null}
+
+                    {group.rootPath ? (
+                      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                        <button
+                          type="button"
+                          className="rounded p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            props.onNewThread(group.rootPath)
+                          }}
+                          title="New thread"
+                        >
+                          <PlusIcon className="h-3.25 w-3.25" />
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setProjectMenuKey((current) => (current === group.key ? null : group.key))
+                            setThreadMenuId(null)
+                          }}
+                          title="Project options"
+                        >
+                          <MoreIcon className="h-3.25 w-3.25" />
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <AnimatePresence initial={false}>
+                    {projectMenuKey === group.key && group.rootPath ? (
+                      <MenuSurface>
+                        <MenuButton
+                          label="Open project"
+                          icon={FolderGitIcon}
+                          onClick={() => {
+                            props.onSelectProject(group.rootPath!)
+                            setProjectMenuKey(null)
+                          }}
+                        />
+                        <MenuButton
+                          label="New thread here"
+                          icon={FolderOpenIcon}
+                          onClick={() => {
+                            props.onNewThread(group.rootPath)
+                            setProjectMenuKey(null)
+                          }}
+                        />
+                        <MenuButton
+                          label="Rename project"
+                          icon={SettingsIcon}
+                          onClick={() => {
+                            const nextLabel = window.prompt('Project name', group.label)
+                            if (nextLabel !== null) {
+                              props.onRenameProject(group.rootPath!, nextLabel)
+                            }
+                            setProjectMenuKey(null)
+                          }}
+                        />
+                        <MenuButton
+                          label="Remove grouping"
+                          icon={TrashIcon}
+                          danger
+                          onClick={() => {
+                            props.onRemoveProject(group.rootPath!)
+                            setProjectMenuKey(null)
+                          }}
+                        />
+                      </MenuSurface>
+                    ) : null}
+                  </AnimatePresence>
+                </div>
+
+                {hasThreads ? (
+                  <CollapsibleBody open={groupExpanded} className="pl-5 pt-px">
+                    <div className="space-y-px">
+                      <AnimatePresence initial={false} mode="popLayout">
+                        {visibleThreads.map((thread, index) => (
+                          <ThreadRowMotion rowKey={thread.id} index={index} className="group/row relative" key={thread.id}>
+                            <m.button
+                              layout
+                              type="button"
+                              whileTap={prefersReducedMotion ? undefined : { scale: 0.985 }}
+                              transition={THREAD_ROW_LAYOUT_TRANSITION}
+                              className={`flex min-h-[26px] w-full items-center gap-2 rounded-[10px] px-3 py-0.5 text-left transition-[background-color,color,box-shadow,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                                thread.active
+                                  ? 'bg-[color:var(--color-shell-elevated)] text-[color:var(--color-shell-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]'
+                                  : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]'
+                              }`}
+                              onClick={() => props.onSelectThread(thread.id)}
+                              title={
+                                thread.accountTag
+                                  ? `${thread.label} · ${thread.accountTag}`
+                                  : thread.label
+                              }
+                            >
+                              <span className="min-w-0 flex-1 truncate pr-12 text-[13px] font-medium tracking-[-0.018em]">
+                                {thread.label}
+                              </span>
+                              <span
+                                className={`shrink-0 text-[11.5px] font-medium tracking-[-0.012em] transition-opacity duration-150 group-hover/row:opacity-0 ${
+                                  thread.active
+                                    ? 'text-[color:var(--color-shell-muted)]'
+                                    : 'text-[color:var(--color-shell-faint)]'
+                                }`}
+                              >
+                                {formatRelativeThreadAge(thread.updatedAt)}
+                              </span>
+                            </m.button>
+
+                            <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                              <button
+                                type="button"
+                                className="pointer-events-auto rounded p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  setThreadMenuId((current) => (current === thread.id ? null : thread.id))
+                                  setProjectMenuKey(null)
+                                }}
+                                title="Thread options"
+                              >
+                                <MoreIcon className="h-3.25 w-3.25" />
+                              </button>
+                            </div>
+
+                            <AnimatePresence initial={false}>
+                              {threadMenuId === thread.id ? (
+                                <MenuSurface>
+                                  <MenuButton
+                                    label="Archive thread"
+                                    icon={ArchiveIcon}
+                                    onClick={() => {
+                                      props.onArchiveThread(thread.id)
+                                      setThreadMenuId(null)
+                                    }}
+                                  />
+                                </MenuSurface>
+                              ) : null}
+                            </AnimatePresence>
+                          </ThreadRowMotion>
+                        ))}
+                      </AnimatePresence>
+
+                      {hasOverflow ? (
+                        <button
+                          type="button"
+                          className="px-3 py-0.5 text-[13px] font-medium tracking-[-0.018em] text-[color:var(--color-shell-muted)] transition hover:text-[color:var(--color-shell-text)]"
+                          onClick={() =>
+                            setExpandedThreadGroups((current) => ({
+                              ...current,
+                              [group.key]: !threadsExpanded,
+                            }))
+                          }
+                        >
+                          {threadsExpanded ? 'Show less' : 'Show more'}
+                        </button>
+                      ) : null}
+                    </div>
+                  </CollapsibleBody>
+                ) : null}
+              </section>
+            )
+          })}
+
+          {props.archivedThreads.length > 0 ? (
+            <section className="space-y-1.5 pt-1">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between px-1.5 text-left text-[color:var(--color-shell-muted)] transition hover:text-[color:var(--color-shell-text)]"
+                onClick={() => setArchivedExpanded((value) => !value)}
+              >
+                <div className="flex items-center gap-1.5">
+                  <ChevronIcon direction={archivedExpanded ? 'down' : 'right'} className="h-3.5 w-3.5" />
+                  <span className="text-[13.5px] font-medium tracking-[-0.018em]">Archived</span>
+                </div>
+                <span className="text-[11px] font-medium tracking-[-0.01em] text-[color:var(--color-shell-faint)]">
+                  {archivedLabel}
+                </span>
+              </button>
+
+              <CollapsibleBody open={archivedExpanded} className="pl-4.5 pt-0.5">
+                <div className="space-y-0.5">
+                  <AnimatePresence initial={false} mode="popLayout">
+                    {props.archivedThreads.map((thread, index) => (
+                      <ThreadRowMotion rowKey={thread.id} index={index} className="group/row relative" key={thread.id}>
+                        <m.div
+                          layout
+                          transition={THREAD_ROW_LAYOUT_TRANSITION}
+                          className="flex min-h-[28px] items-center gap-2 rounded-[10px] px-3 py-1 text-[color:var(--color-shell-muted)] transition-[background-color,color,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
+                        >
+                          <span className="min-w-0 flex-1 truncate pr-12 text-[13.5px] font-medium tracking-[-0.018em]">
+                            {thread.label}
+                          </span>
+                          <span className="shrink-0 text-[11.5px] font-medium tracking-[-0.012em] text-[color:var(--color-shell-faint)] transition-opacity duration-150 group-hover/row:opacity-0">
+                            {formatRelativeThreadAge(thread.updatedAt)}
+                          </span>
+                        </m.div>
+
+                        <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                          <button
+                            type="button"
+                            className="pointer-events-auto rounded p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
+                            onClick={() => props.onUnarchiveThread(thread.id)}
+                            title="Restore thread"
+                          >
+                            <UndoIcon className="h-3.25 w-3.25" />
+                          </button>
+                        </div>
+                      </ThreadRowMotion>
+                    ))}
+                  </AnimatePresence>
+                </div>
+              </CollapsibleBody>
+            </section>
+          ) : null}
+        </div>
+      </div>
+
+        <div className="relative p-3.5 pt-2.5">
           {props.accountMenuOpen ? (
             <AccountFlyout
-              collapsed
+              collapsed={false}
               accounts={props.accounts}
               accountLabel={props.accountLabel}
               planLabel={props.planLabel}
@@ -332,256 +925,18 @@ export function Sidebar(props: SidebarProps) {
             />
           ) : null}
 
-          <RailIconButton label="Settings" icon={SettingsIcon} onClick={props.onToggleAccountMenu} />
+          <button
+            type="button"
+            onClick={props.onToggleAccountMenu}
+            className="flex h-[34px] w-full items-center justify-between rounded-[9px] px-3 text-[color:var(--color-shell-muted)] transition-colors hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
+          >
+            <div className="flex items-center gap-2.5">
+              <SettingsIcon className="h-3.5 w-3.5" />
+              <span className="text-[13px]">Settings</span>
+            </div>
+          </button>
         </div>
       </aside>
-    )
-  }
-
-  return (
-    <aside className="relative flex h-full w-[286px] shrink-0 flex-col bg-[#101012] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
-      <div className="space-y-1 px-3.5 pb-1 pt-3">
-        <SidebarActionButton label="Add project" icon={PlusIcon} onClick={props.onAddProject} />
-      </div>
-
-      <div className="px-3.5 pb-1.5 pt-3.5">
-        <span className="text-[11.5px] font-medium tracking-[0.08em] text-neutral-500">Projects</span>
-      </div>
-
-      <div className="shell-scroll-none flex-1 overflow-y-auto px-2.5 pb-3.5">
-        <div className="space-y-1">
-          {props.groups.map((group) => (
-            <div className="space-y-0.5" key={group.key}>
-              <div
-                className={`group relative flex min-h-[30px] w-full items-center justify-between rounded-[9px] px-2.5 py-0 text-left transition-colors ${
-                  group.active
-                    ? 'bg-white/8 text-neutral-200'
-                    : 'text-neutral-400 hover:bg-white/5'
-                }`}
-              >
-                <div className="flex min-w-0 flex-1 items-center gap-1.5 py-1">
-                  <button
-                    type="button"
-                    className={`rounded p-0.5 transition-colors ${
-                      group.active ? 'text-neutral-300' : 'text-neutral-500 hover:text-neutral-300'
-                    }`}
-                    onClick={() => props.onToggleGroup(group.key)}
-                    title={group.expanded ? 'Collapse project' : 'Expand project'}
-                  >
-                    <ChevronIcon
-                      direction={group.expanded ? 'down' : 'right'}
-                      className="h-3.5 w-3.5 shrink-0"
-                    />
-                  </button>
-                  {group.rootPath ? (
-                    <button
-                      type="button"
-                      className={`min-w-0 flex-1 text-left ${
-                        group.active ? 'text-neutral-100' : 'text-neutral-300 group-hover:text-neutral-200'
-                      }`}
-                      onClick={() => props.onSelectProject(group.rootPath!)}
-                    >
-                      <span className="block truncate text-[13px] font-medium tracking-[-0.015em]">
-                        {group.label}
-                      </span>
-                    </button>
-                  ) : (
-                    <span className="truncate text-[13px] font-medium tracking-[-0.015em] text-neutral-300">
-                      {group.label}
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex shrink-0 items-center gap-0.5 pr-1 opacity-0 transition-opacity group-hover:opacity-100">
-                  {group.rootPath ? (
-                    <button
-                      type="button"
-                      className="rounded p-0.75 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        props.onNewThread(group.rootPath)
-                      }}
-                      title="New thread"
-                    >
-                      <PlusIcon className="h-3.25 w-3.25" />
-                    </button>
-                  ) : null}
-                  {group.rootPath ? (
-                    <button
-                      type="button"
-                      className="rounded p-0.75 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        setProjectMenuKey((current) => (current === group.key ? null : group.key))
-                        setThreadMenuId(null)
-                      }}
-                      title="Project options"
-                    >
-                      <MoreIcon className="h-3.25 w-3.25" />
-                    </button>
-                  ) : null}
-                </div>
-
-                {projectMenuKey === group.key && group.rootPath ? (
-                  <MenuSurface>
-                    <MenuButton
-                      label="New thread here"
-                      icon={FolderOpenIcon}
-                      onClick={() => {
-                        props.onNewThread(group.rootPath)
-                        setProjectMenuKey(null)
-                      }}
-                    />
-                    <MenuButton
-                      label="Rename project"
-                      icon={SettingsIcon}
-                      onClick={() => {
-                        const nextLabel = window.prompt('Project name', group.label)
-                        if (nextLabel !== null) {
-                          props.onRenameProject(group.rootPath!, nextLabel)
-                        }
-                        setProjectMenuKey(null)
-                      }}
-                    />
-                    <MenuButton
-                      label="Remove grouping"
-                      icon={TrashIcon}
-                      danger
-                      onClick={() => {
-                        props.onRemoveProject(group.rootPath!)
-                        setProjectMenuKey(null)
-                      }}
-                    />
-                  </MenuSurface>
-                ) : null}
-              </div>
-
-              {group.expanded ? (
-                <div className="mt-0.5 space-y-0.5 pl-4.5 pr-1">
-                  {group.threads.map((thread) => (
-                    <div
-                      className={`group relative flex min-h-[34px] w-full cursor-pointer items-center justify-between rounded-[10px] px-3 py-0.5 text-left transition-colors ${
-                        thread.active
-                          ? 'bg-white/9 font-medium text-white'
-                          : 'text-neutral-400 hover:bg-white/5 hover:text-neutral-200'
-                      }`}
-                      key={thread.id}
-                      onClick={() => props.onSelectThread(thread.id)}
-                    >
-                      <div className="min-w-0 flex flex-1 items-center gap-1.5 py-0.5 pr-2">
-                        <span className="min-w-0 flex-1 truncate text-[13px] tracking-[-0.02em]">{thread.label}</span>
-                        {thread.accountTag ? (
-                          <span className="max-w-[88px] shrink-0 truncate rounded-full border border-white/6 bg-white/[0.02] px-1.5 py-0.5 text-[9px] uppercase tracking-[0.08em] text-neutral-500">
-                            {thread.accountTag}
-                          </span>
-                        ) : null}
-                      </div>
-
-                      <div className="flex h-4.5 shrink-0 items-center">
-                        <div className="flex items-center opacity-0 transition-opacity group-hover:opacity-100">
-                          <button
-                            type="button"
-                            className="rounded p-0.75 text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              setThreadMenuId((current) => (current === thread.id ? null : thread.id))
-                              setProjectMenuKey(null)
-                            }}
-                            title="Thread options"
-                          >
-                            <MoreIcon className="h-3.25 w-3.25" />
-                          </button>
-                        </div>
-
-                        {thread.active ? (
-                          <div className="ml-1 text-[12px] font-medium text-neutral-500 group-hover:hidden">•</div>
-                        ) : null}
-                      </div>
-
-                      {threadMenuId === thread.id ? (
-                        <MenuSurface>
-                          <MenuButton
-                            label="Archive thread"
-                            icon={ArchiveIcon}
-                            onClick={() => {
-                              props.onArchiveThread(thread.id)
-                              setThreadMenuId(null)
-                            }}
-                          />
-                        </MenuSurface>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ))}
-
-          {props.archivedThreads.length > 0 ? (
-            <div className="space-y-0.5">
-              <button
-                type="button"
-                className="flex min-h-[30px] w-full items-center justify-between rounded-[9px] px-2.5 py-0.5 text-left text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
-                onClick={() => setArchivedExpanded((value) => !value)}
-              >
-                <div className="flex items-center gap-2">
-                  <ChevronIcon direction={archivedExpanded ? 'down' : 'right'} className="h-3.5 w-3.5" />
-                  <span className="text-[13px] font-medium tracking-[-0.015em] text-neutral-300">Archived</span>
-                </div>
-                <span className="text-[11px] text-neutral-500">{archivedLabel}</span>
-              </button>
-
-              {archivedExpanded ? (
-                <div className="space-y-0.5 pl-4.5 pr-1">
-                  {props.archivedThreads.map((thread) => (
-                    <div
-                      className="group flex min-h-[33px] items-center justify-between rounded-[9px] px-3 py-0.5 text-neutral-500 transition hover:bg-white/5 hover:text-neutral-200"
-                      key={thread.id}
-                    >
-                      <span className="min-w-0 flex-1 truncate py-0.5 pr-2 text-[13px]">{thread.label}</span>
-                      <button
-                        type="button"
-                        className="rounded p-0.75 text-neutral-400 transition hover:bg-white/10 hover:text-white"
-                        onClick={() => props.onUnarchiveThread(thread.id)}
-                        title="Restore thread"
-                      >
-                        <UndoIcon className="h-3.25 w-3.25" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="relative p-3.5 pt-2.5">
-        {props.accountMenuOpen ? (
-          <AccountFlyout
-            collapsed={false}
-            accounts={props.accounts}
-            accountLabel={props.accountLabel}
-            planLabel={props.planLabel}
-            onSelectAccount={props.onSelectAccount}
-            onAddAccount={props.onAddAccount}
-            onOpenSettings={props.onOpenSettings}
-            onSignOut={props.onSignOut}
-            signOutDisabled={props.signOutDisabled}
-          />
-        ) : null}
-
-        <button
-          type="button"
-          onClick={props.onToggleAccountMenu}
-          className="flex h-[34px] w-full items-center justify-between rounded-[9px] px-3 text-neutral-400 transition-colors hover:bg-white/5 hover:text-neutral-200"
-        >
-          <div className="flex items-center gap-2.5">
-            <SettingsIcon className="h-3.5 w-3.5" />
-            <span className="text-[13px]">Settings</span>
-          </div>
-        </button>
-      </div>
-    </aside>
+    </LazyMotion>
   )
 }

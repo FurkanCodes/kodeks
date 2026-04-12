@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { AnimatePresence, LazyMotion, domAnimation, m, useReducedMotion } from 'motion/react'
+import { startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ComposerDock, type ComposerChoice } from './components/shell/ComposerDock'
 import {
   InspectorPanel,
@@ -29,6 +30,7 @@ import {
   getSnapshot,
   interruptTurn,
   listModels,
+  loadWorkspaceStore as loadNativeWorkspaceStore,
   listWorkspaceFiles,
   loginChatgpt,
   logout,
@@ -45,6 +47,7 @@ import {
   refreshRuntime,
   resolveApproval,
   savePastedImage,
+  saveWorkspaceStore as saveNativeWorkspaceStore,
   restartRuntime,
   type ReasoningEffortOption,
   selectAccount,
@@ -58,14 +61,18 @@ import {
   unarchiveThread,
 } from './lib/kodeks'
 import {
+  EMPTY_WORKSPACE_STORE,
+  clearLegacyWorkspaceStore,
   defaultProjectLabel,
-  loadWorkspaceStore,
+  loadLegacyWorkspaceStore,
+  normalizeWorkspaceStore,
+  resolvePersistedWorkspaceStore,
   removeProjectGrouping,
   renameProject,
-  saveWorkspaceStore,
   setComposerRateLimitsVisible,
   setSidebarCollapsed,
   setThreadPreference,
+  normalizeProjectRoot,
   upsertProject,
   type WorkspaceStore,
 } from './lib/workspaceStore'
@@ -224,13 +231,74 @@ type ShellHistoryState = {
   index: number
 }
 
+const THREAD_VIEW_FADE_IN_EASE = [0.16, 1, 0.3, 1] as const
+const THREAD_VIEW_FADE_OUT_EASE = [0.7, 0, 0.84, 0] as const
+
+const THREAD_VIEW_VARIANTS = {
+  hidden: {
+    opacity: 0,
+    transition: {
+      duration: 0.28,
+      ease: THREAD_VIEW_FADE_OUT_EASE,
+    },
+  },
+  visible: {
+    opacity: 1,
+    transition: {
+      duration: 0.28,
+      ease: THREAD_VIEW_FADE_IN_EASE,
+    },
+  },
+} as const
+
+const THREAD_VIEW_REDUCED_VARIANTS = {
+  hidden: {
+    opacity: 0,
+    transition: {
+      duration: 0.01,
+    },
+  },
+  visible: {
+    opacity: 1,
+    transition: {
+      duration: 0.01,
+    },
+  },
+} as const
+
+function ThreadViewTransition(props: {
+  viewKey: string
+  children: ReactNode
+}) {
+  const prefersReducedMotion = useReducedMotion()
+
+  return (
+    <LazyMotion features={domAnimation}>
+      <AnimatePresence initial={false} mode="wait">
+        <m.div
+          key={props.viewKey}
+          initial="hidden"
+          animate="visible"
+          exit="hidden"
+          variants={prefersReducedMotion ? THREAD_VIEW_REDUCED_VARIANTS : THREAD_VIEW_VARIANTS}
+          className="flex min-h-0 flex-1 flex-col"
+          style={prefersReducedMotion ? undefined : { willChange: 'opacity' }}
+        >
+          {props.children}
+        </m.div>
+      </AnimatePresence>
+    </LazyMotion>
+  )
+}
+
 function App() {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const composerAttachmentsRef = useRef<ComposerImageAttachment[]>([])
   const accountTraceConsoleHeadRef = useRef<string | null>(null)
 
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY_SNAPSHOT)
-  const [workspaceStore, setWorkspaceStore] = useState<WorkspaceStore>(() => loadWorkspaceStore())
+  const [workspaceStore, setWorkspaceStore] = useState<WorkspaceStore>(EMPTY_WORKSPACE_STORE)
+  const [workspaceStoreHydrated, setWorkspaceStoreHydrated] = useState(false)
   const [shellHistory, setShellHistory] = useState<ShellHistoryState>({
     entries: [],
     index: -1,
@@ -292,13 +360,15 @@ function App() {
   const activeTurnId = activeProjectViewRoot ? null : snapshot.session.active_turn_id || null
 
   const currentProjectRoot =
-    activeProjectViewRoot ||
-    activeThread?.repo ||
-    activeThread?.cwd ||
-    snapshot.session.repo ||
-    snapshot.session.cwd ||
-    mostRecentProjectRoot(workspaceStore) ||
-    '.'
+    normalizeProjectRoot(
+      activeProjectViewRoot ||
+        activeThread?.repo ||
+        activeThread?.cwd ||
+        snapshot.session.repo ||
+        snapshot.session.cwd ||
+        mostRecentProjectRoot(workspaceStore) ||
+        '.',
+    )
 
   const activeProjectLabel = useMemo(() => {
     const saved = workspaceStore.projects.find(
@@ -320,6 +390,14 @@ function App() {
         : undefined,
     [activeProjectLabel, activeProjectViewRoot, currentProjectRoot],
   )
+
+  const threadViewKey = useMemo(() => {
+    if (activeProjectViewRoot) {
+      return `project:${activeProjectViewRoot}`
+    }
+
+    return `thread:${activeThread?.id || snapshot.active_thread_id || 'empty'}`
+  }, [activeProjectViewRoot, activeThread?.id, snapshot.active_thread_id])
 
   const pendingApprovals = useMemo(
     () => (activeProjectViewRoot ? [] : snapshot.approvals.filter((approval) => approval.status === 'pending')),
@@ -472,6 +550,7 @@ function App() {
         label: thread.name || thread.preview || 'Untitled thread',
         active: false,
         live: false,
+        updatedAt: thread.updated_at,
       })),
     [snapshot.archived_threads],
   )
@@ -569,8 +648,64 @@ function App() {
   }, [accountSwitchInProgress, error, snapshot, switchingAccount?.label])
 
   useEffect(() => {
-    saveWorkspaceStore(workspaceStore)
-  }, [workspaceStore])
+    let cancelled = false
+
+    async function hydrateWorkspaceStore() {
+      const legacyStore = loadLegacyWorkspaceStore()
+
+      try {
+        const nativeStore = normalizeWorkspaceStore(await loadNativeWorkspaceStore())
+        const resolved = resolvePersistedWorkspaceStore(nativeStore, legacyStore)
+
+        if (resolved.migratedLegacy) {
+          await saveNativeWorkspaceStore(resolved.store)
+        }
+
+        clearLegacyWorkspaceStore()
+        if (cancelled) {
+          return
+        }
+
+        startTransition(() => {
+          setWorkspaceStore(resolved.store)
+          setWorkspaceStoreHydrated(true)
+        })
+      } catch (nextError) {
+        console.error('[kodeks-workspace-store] failed to hydrate native workspace store', nextError)
+        if (cancelled) {
+          return
+        }
+
+        startTransition(() => {
+          setWorkspaceStore(legacyStore)
+          setWorkspaceStoreHydrated(true)
+        })
+      }
+    }
+
+    void hydrateWorkspaceStore()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!workspaceStoreHydrated) {
+      return
+    }
+
+    let cancelled = false
+
+    void saveNativeWorkspaceStore(workspaceStore).catch((nextError) => {
+      if (!cancelled) {
+        console.error('[kodeks-workspace-store] failed to save native workspace store', nextError)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceStore, workspaceStoreHydrated])
 
   useEffect(() => {
     const accountTraces = snapshot.diagnostics.traces.filter((trace) => trace.direction === 'acct')
@@ -638,7 +773,7 @@ function App() {
   }, [activeTurnId])
 
   useEffect(() => {
-    if (!activeThread) {
+    if (!workspaceStoreHydrated || !activeThread) {
       return
     }
 
@@ -646,10 +781,10 @@ function App() {
     if (root) {
       setWorkspaceStore((current) => upsertProject(current, root))
     }
-  }, [activeThread])
+  }, [activeThread, workspaceStoreHydrated])
 
   useEffect(() => {
-    if (activeProjectViewRoot || activeThread) {
+    if (!workspaceStoreHydrated || activeProjectViewRoot || activeThread) {
       return
     }
 
@@ -657,7 +792,7 @@ function App() {
     if (root) {
       setActiveProjectViewRoot(root)
     }
-  }, [activeProjectViewRoot, activeThread, workspaceStore])
+  }, [activeProjectViewRoot, activeThread, workspaceStore, workspaceStoreHydrated])
 
   useEffect(() => {
     const preference =
@@ -915,17 +1050,22 @@ function App() {
       historyIndex?: number
     },
   ) {
+    const normalizedRootPath = normalizeProjectRoot(rootPath)
     setPanelMode(null)
     setFocusedMessageId(null)
     setError(null)
     setComposerResetToken((current) => current + 1)
     setSelectedCodePath(null)
     setSelectedDiffPath(null)
-    setActiveProjectViewRoot(rootPath)
-    setWorkspaceStore((current) => upsertProject(current, rootPath))
+    setActiveProjectViewRoot(normalizedRootPath)
+    setExpandedGroups((current) => ({
+      ...current,
+      [normalizedRootPath]: true,
+    }))
+    setWorkspaceStore((current) => upsertProject(current, normalizedRootPath))
 
     if (options?.pushHistory !== false) {
-      recordShellNavigation({ kind: 'project', rootPath })
+      recordShellNavigation({ kind: 'project', rootPath: normalizedRootPath })
     } else if (typeof options?.historyIndex === 'number') {
       setShellHistory((current) => ({ ...current, index: options.historyIndex! }))
     }
@@ -945,7 +1085,9 @@ function App() {
   }
 
   function handleNewThread(rootPath?: string | null) {
-    const targetRoot = rootPath || currentProjectRoot || snapshot.session.cwd || mostRecentProjectRoot(workspaceStore) || '.'
+    const targetRoot = normalizeProjectRoot(
+      rootPath || currentProjectRoot || snapshot.session.cwd || mostRecentProjectRoot(workspaceStore) || '.',
+    )
     openProjectView(targetRoot)
   }
 
@@ -964,9 +1106,15 @@ function App() {
     setBusy(true)
     setError(null)
     setFocusedMessageId(null)
+    const selectedThread = snapshot.threads.find((thread) => thread.id === threadId)
+    const selectedThreadRoot = selectedThread ? projectRootForThread(selectedThread) || 'other' : 'other'
     try {
       setSnapshot(await selectThread(threadId, options?.config))
       setActiveProjectViewRoot(null)
+      setExpandedGroups((current) => ({
+        ...current,
+        [selectedThreadRoot]: true,
+      }))
 
       if (options?.pushHistory !== false) {
         recordShellNavigation({ kind: 'thread', threadId })
@@ -996,6 +1144,7 @@ function App() {
     }))
 
     const root = activeProjectViewRoot || currentProjectRoot || snapshot.session.cwd || '.'
+    const normalizedRoot = normalizeProjectRoot(root)
     const config = buildThreadConfig(activeProjectViewRoot ? root : undefined)
 
     setBusy(true)
@@ -1018,10 +1167,10 @@ function App() {
         nextSnapshot = await sendPrompt(snapshot.active_thread_id, trimmedPrompt, attachments, config)
         preferenceThreadId = snapshot.active_thread_id
       } else {
-        nextSnapshot = await startThread(root, trimmedPrompt, attachments, config)
+        nextSnapshot = await startThread(normalizedRoot, trimmedPrompt, attachments, config)
         preferenceThreadId = nextSnapshot.active_thread_id || null
         setActiveProjectViewRoot(null)
-        setWorkspaceStore((current) => upsertProject(current, root))
+        setWorkspaceStore((current) => upsertProject(current, normalizedRoot))
       }
 
       setSnapshot(nextSnapshot)
@@ -1115,6 +1264,7 @@ function App() {
           label: thread.name || thread.preview || 'Untitled thread',
           active: false,
           live: false,
+          updatedAt: thread.updated_at,
         })
       }
     } catch (nextError) {
@@ -1252,11 +1402,19 @@ function App() {
   function handleAddAccount() {
     setAccountMenuOpen(false)
     setActiveSettingsSection('account')
+    setSettingsSearch('')
     setSettingsOpen(true)
     if (busy || snapshot.account.login_in_progress) {
       return
     }
     void handleLoginChatgpt()
+  }
+
+  function openSettingsView(section: SettingsSectionKey, search = '') {
+    setAccountMenuOpen(false)
+    setSettingsSearch(search)
+    setActiveSettingsSection(section)
+    setSettingsOpen(true)
   }
 
   async function handleRestart() {
@@ -1546,6 +1704,12 @@ function App() {
           canGoBack={canGoBack}
           canGoForward={canGoForward}
           runState={runState}
+          titlePinned={!activeProjectViewRoot}
+          onTitleAccessoryClick={
+            !activeProjectViewRoot && activeThread
+              ? () => void handleArchiveThread(activeThread.id)
+              : undefined
+          }
           changesCount={changesCount}
           changesDisabled={changesCount === 0}
           changesOpen={effectivePanelMode === 'changes'}
@@ -1572,6 +1736,9 @@ function App() {
             planLabel={activeSidebarAccount?.planLabel || humanizePlan(snapshot.account.plan)}
             onAddProject={() => void handleAddProject()}
             onNewThread={(rootPath) => void handleNewThread(rootPath)}
+            onSearch={() => openSettingsView('account')}
+            onOpenPlugins={() => openSettingsView('features')}
+            onOpenAutomations={() => openSettingsView('features')}
             onSelectProject={handleProjectSelect}
             onSelectThread={(threadId) => void handleThreadSelect(threadId)}
             onArchiveThread={(threadId) => void handleArchiveThread(threadId)}
@@ -1582,11 +1749,7 @@ function App() {
             onToggleAccountMenu={() => setAccountMenuOpen((value) => !value)}
             onSelectAccount={(accountId) => void handleSelectAccount(accountId)}
             onAddAccount={handleAddAccount}
-            onOpenSettings={() => {
-              setAccountMenuOpen(false)
-              setActiveSettingsSection('account')
-              setSettingsOpen(true)
-            }}
+            onOpenSettings={() => openSettingsView('account')}
             onSignOut={() => void handleLogout()}
             signOutDisabled={busy || accountSwitchInProgress}
           />
@@ -1630,21 +1793,23 @@ function App() {
                     {noticeContent}
                   </div>
 
-                  <MessageTimeline
-                    messages={shellMessagesValue}
-                    suggestions={PROMPT_SUGGESTIONS}
-                    emptyState={activeProjectEmptyState}
-                    composerEngaged={composerEngaged}
-                    fillAvailableHeight
-                    liveStatus={liveStatus}
-                    focusedMessageId={focusedMessageId}
-                    scrollContainerRef={scrollContainerRef}
-                    onSuggestionSelect={(value) => void handleSend(value)}
-                    onOpenFileReference={handleOpenCodePath}
-                    onOpenChangeReference={handleOpenDiffPath}
-                    onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
-                    resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
-                  />
+                  <ThreadViewTransition viewKey={threadViewKey}>
+                    <MessageTimeline
+                      messages={shellMessagesValue}
+                      suggestions={PROMPT_SUGGESTIONS}
+                      emptyState={activeProjectEmptyState}
+                      composerEngaged={composerEngaged}
+                      fillAvailableHeight
+                      liveStatus={liveStatus}
+                      focusedMessageId={focusedMessageId}
+                      scrollContainerRef={scrollContainerRef}
+                      onSuggestionSelect={(value) => void handleSend(value)}
+                      onOpenFileReference={handleOpenCodePath}
+                      onOpenChangeReference={handleOpenDiffPath}
+                      onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
+                      resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
+                    />
+                  </ThreadViewTransition>
                 </div>
               </div>
 
@@ -2870,6 +3035,12 @@ function buildSettingsSections(
           ],
         },
       ],
+    },
+    {
+      key: 'features',
+      label: 'Features',
+      emptyMessage:
+        'Plugin and automation surfaces are not wired into Kodeks yet. This section is reserved for that work.',
     },
   ]
 }

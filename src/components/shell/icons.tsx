@@ -7,6 +7,7 @@ import {
   BookOpen,
   Box,
   ChevronRight,
+  Clock3,
   CircleGauge,
   CloudOff,
   Copy,
@@ -17,8 +18,11 @@ import {
   ExternalLink,
   FileCode2,
   FileText,
+  FolderGit2,
+  FolderPlus,
   GitBranch,
   Keyboard,
+  Pin,
   LogOut,
   Monitor,
   Minus,
@@ -32,6 +36,7 @@ import {
   Settings,
   Shield,
   ShieldAlert,
+  SquarePen,
   PanelLeftClose,
   PanelLeftOpen,
   Sparkles,
@@ -175,6 +180,14 @@ export function FolderOpenIcon(props: IconProps) {
   return renderIcon(FolderOpen, props, 1.25)
 }
 
+export function FolderGitIcon(props: IconProps) {
+  return renderIcon(FolderGit2, props, 1.25)
+}
+
+export function FolderPlusIcon(props: IconProps) {
+  return renderIcon(FolderPlus, props, 1.25)
+}
+
 export function MonitorIcon(props: IconProps) {
   return renderIcon(Monitor, props, 1.25)
 }
@@ -223,6 +236,10 @@ export function GaugeIcon(props: IconProps) {
   return renderIcon(CircleGauge, props, 1.25)
 }
 
+export function ClockIcon(props: IconProps) {
+  return renderIcon(Clock3, props, 1.25)
+}
+
 export function ShieldIcon(props: IconProps) {
   return renderIcon(Shield, props, 1.25)
 }
@@ -237,4 +254,12 @@ export function SidebarCollapseIcon(props: IconProps) {
 
 export function SidebarExpandIcon(props: IconProps) {
   return renderIcon(PanelLeftOpen, props, 1.35)
+}
+
+export function PinIcon(props: IconProps) {
+  return renderIcon(Pin, props, 1.3)
+}
+
+export function SquarePenIcon(props: IconProps) {
+  return renderIcon(SquarePen, props, 1.25)
 }

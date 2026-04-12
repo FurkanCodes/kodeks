@@ -2,9 +2,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  EMPTY_WORKSPACE_STORE,
+  LEGACY_WORKSPACE_STORE_KEY,
+  clearLegacyWorkspaceStore,
   defaultProjectLabel,
+  loadLegacyWorkspaceStore,
+  normalizeWorkspaceStore,
   removeProjectGrouping,
   renameProject,
+  resolvePersistedWorkspaceStore,
   setComposerRateLimitsVisible,
   upsertProject,
   type WorkspaceStore,
@@ -14,14 +20,12 @@ function makeStore(): WorkspaceStore {
   return {
     projects: [
       {
-        id: '/Users/furkan/kodeks',
         rootPath: '/Users/furkan/kodeks',
         label: 'Kodeks',
         removed: true,
         lastUsedAt: 1,
       },
     ],
-    recentRoots: [],
     threadPreferences: {},
     ui: {
       sidebarCollapsed: false,
@@ -36,7 +40,6 @@ test('upsertProject revives existing removed projects without duplicating them',
   assert.equal(next.projects.length, 1)
   assert.equal(next.projects[0].removed, false)
   assert.equal(next.projects[0].label, 'Kodeks')
-  assert.deepEqual(next.recentRoots, ['/Users/furkan/kodeks'])
 })
 
 test('renameProject falls back to a derived label when given blank input', () => {
@@ -54,7 +57,6 @@ test('removeProjectGrouping marks existing projects as removed and creates tombs
   assert.deepEqual(
     unknown.projects.find((project) => project.rootPath === '/tmp/demo-app'),
     {
-      id: '/tmp/demo-app',
       rootPath: '/tmp/demo-app',
       label: 'Demo App',
       lastUsedAt: unknown.projects.find((project) => project.rootPath === '/tmp/demo-app')?.lastUsedAt,
@@ -68,4 +70,173 @@ test('setComposerRateLimitsVisible updates the persisted ui preference', () => {
 
   assert.equal(next.ui.showComposerRateLimits, false)
   assert.equal(makeStore().ui.showComposerRateLimits, true)
+})
+
+test('resolvePersistedWorkspaceStore prefers native data when it exists', () => {
+  const nativeStore: WorkspaceStore = {
+    projects: [
+      {
+        rootPath: '/work/native',
+        label: 'Native',
+        removed: false,
+        lastUsedAt: 90,
+      },
+    ],
+    threadPreferences: {},
+    ui: {
+      sidebarCollapsed: false,
+      showComposerRateLimits: true,
+    },
+  }
+  const legacyStore: WorkspaceStore = {
+    projects: [
+      {
+        rootPath: '/work/legacy',
+        label: 'Legacy',
+        removed: false,
+        lastUsedAt: 40,
+      },
+    ],
+    threadPreferences: {},
+    ui: {
+      sidebarCollapsed: true,
+      showComposerRateLimits: false,
+    },
+  }
+
+  assert.deepEqual(resolvePersistedWorkspaceStore(nativeStore, legacyStore), {
+    store: nativeStore,
+    migratedLegacy: false,
+  })
+})
+
+test('resolvePersistedWorkspaceStore migrates legacy data when native store is empty', () => {
+  const legacyStore: WorkspaceStore = {
+    projects: [
+      {
+        rootPath: '/work/legacy',
+        label: 'Legacy',
+        removed: false,
+        lastUsedAt: 40,
+      },
+    ],
+    threadPreferences: {
+      'thread-1': {
+        model: 'gpt-5.4',
+      },
+    },
+    ui: {
+      sidebarCollapsed: true,
+      showComposerRateLimits: false,
+    },
+  }
+
+  assert.deepEqual(resolvePersistedWorkspaceStore(EMPTY_WORKSPACE_STORE, legacyStore), {
+    store: legacyStore,
+    migratedLegacy: true,
+  })
+})
+
+test('normalizeWorkspaceStore collapses duplicate project roots that only differ by trailing slash', () => {
+  const normalized = normalizeWorkspaceStore({
+    projects: [
+      {
+        rootPath: '/work/drumkit/',
+        label: 'Drumkit',
+        removed: false,
+        lastUsedAt: 10,
+      },
+      {
+        rootPath: '/work/drumkit',
+        label: 'Drumkit',
+        removed: false,
+        lastUsedAt: 20,
+      },
+    ],
+  })
+
+  assert.deepEqual(normalized.projects, [
+    {
+      rootPath: '/work/drumkit',
+      label: 'Drumkit',
+      removed: false,
+      lastUsedAt: 20,
+    },
+  ])
+})
+
+test('legacy localStorage payload loads into the normalized workspace store shape', () => {
+  const storage = new Map<string, string>()
+  const windowStub = {
+    localStorage: {
+      getItem(key: string) {
+        return storage.get(key) ?? null
+      },
+      setItem(key: string, value: string) {
+        storage.set(key, value)
+      },
+      removeItem(key: string) {
+        storage.delete(key)
+      },
+    },
+  }
+  const previousWindow = (globalThis as { window?: unknown }).window
+
+  ;(globalThis as { window?: unknown }).window = windowStub
+  windowStub.localStorage.setItem(
+    LEGACY_WORKSPACE_STORE_KEY,
+    JSON.stringify({
+      projects: [
+        {
+          rootPath: '/work/alpha',
+          label: '',
+          removed: false,
+          lastUsedAt: 33,
+        },
+      ],
+      recentRoots: ['/work/alpha'],
+      threadPreferences: {
+        'thread-7': {
+          model: 'gpt-5.4',
+          reasoningEffort: 'high',
+        },
+      },
+      ui: {
+        sidebarCollapsed: true,
+        showComposerRateLimits: false,
+      },
+    }),
+  )
+
+  try {
+    assert.deepEqual(loadLegacyWorkspaceStore(), {
+      projects: [
+        {
+          rootPath: '/work/alpha',
+          label: 'Alpha',
+          removed: false,
+          lastUsedAt: 33,
+        },
+      ],
+      threadPreferences: {
+        'thread-7': {
+          model: 'gpt-5.4',
+          reasoningEffort: 'high',
+        },
+      },
+      ui: {
+        sidebarCollapsed: true,
+        showComposerRateLimits: false,
+      },
+    })
+
+    clearLegacyWorkspaceStore()
+    assert.equal(windowStub.localStorage.getItem(LEGACY_WORKSPACE_STORE_KEY), null)
+  } finally {
+    if (previousWindow === undefined) {
+      delete (globalThis as { window?: unknown }).window
+    } else {
+      ;(globalThis as { window?: unknown }).window = previousWindow
+    }
+  }
 })

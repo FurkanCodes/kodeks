@@ -10,6 +10,10 @@ import {
   useRef,
 } from 'react'
 import {
+  parseExactMarkdownInlineToken,
+  type ExactMarkdownInlineToken,
+} from '../../lib/messageMarkdown'
+import {
   BranchIcon,
   ChevronIcon,
   FileCodeIcon,
@@ -24,8 +28,6 @@ const FILE_TOKEN_REGEX = new RegExp(`(${FILE_TOKEN_PATTERN})`, 'g')
 const FILE_TOKEN_EXACT_REGEX = new RegExp(`^${FILE_TOKEN_PATTERN}$`)
 const INLINE_TOKEN_REGEX =
   /(!\[[^\]]*\]\([^)]+\)|`[^`\n]+`|\[[^\]]+\]\([^)]+\)|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_)/g
-const MARKDOWN_LINK_EXACT_REGEX = /^\[([^\]]+)\]\(([^)]+)\)$/
-const MARKDOWN_IMAGE_EXACT_REGEX = /^!\[([^\]]*)\]\(([^)]+)\)$/
 
 export type ChatChangeFile = {
   path: string
@@ -155,6 +157,17 @@ function renderInlineContent(
 
     if (part.startsWith('`') && part.endsWith('`')) {
       const inlineValue = part.slice(1, -1)
+      const inlineMarkdownToken = parseExactMarkdownInlineToken(inlineValue)
+
+      if (inlineMarkdownToken) {
+        return renderMarkdownInlineToken(
+          inlineMarkdownToken,
+          resolveFileReference,
+          onOpenFileReference,
+          onOpenExternalFile,
+          `${keyPrefix}-code-md-${index}`,
+        )
+      }
 
       if (looksLikeFileReference(inlineValue)) {
         return renderFileChip(
@@ -179,40 +192,10 @@ function renderInlineContent(
       )
     }
 
-    const markdownImageMatch = part.match(MARKDOWN_IMAGE_EXACT_REGEX)
-    if (markdownImageMatch) {
-      return (
-        <img
-          className="my-3 max-h-[24rem] rounded-[14px] border border-white/8 bg-black/20"
-          key={`${keyPrefix}-image-${index}`}
-          src={toImageSource(markdownImageMatch[2] || '')}
-          alt={markdownImageMatch[1] || 'Image'}
-        />
-      )
-    }
-
-    const markdownLinkMatch = part.match(MARKDOWN_LINK_EXACT_REGEX)
-    if (markdownLinkMatch) {
-      const linkLabel = markdownLinkMatch[1] || markdownLinkMatch[2] || ''
-      const linkTarget = markdownLinkMatch[2] || ''
-
-      if (looksLikeWebUrl(linkTarget)) {
-        return (
-          <a
-            className="font-medium text-[#9dbbf0] underline decoration-[#9dbbf0]/25 underline-offset-3 transition hover:text-[#bdd0f8] hover:decoration-[#bdd0f8]/45"
-            href={linkTarget}
-            key={`${keyPrefix}-md-link-${index}`}
-            rel="noreferrer"
-            target="_blank"
-          >
-            {linkLabel}
-          </a>
-        )
-      }
-
-      return renderFileChip(
-        linkLabel,
-        linkTarget,
+    const markdownToken = parseExactMarkdownInlineToken(part)
+    if (markdownToken) {
+      return renderMarkdownInlineToken(
+        markdownToken,
         resolveFileReference,
         onOpenFileReference,
         onOpenExternalFile,
@@ -277,6 +260,48 @@ function renderInlineContent(
       `${keyPrefix}-text-${index}`,
     )
   })
+}
+
+function renderMarkdownInlineToken(
+  token: ExactMarkdownInlineToken,
+  resolveFileReference?: (token: string) => string | null,
+  onOpenFileReference?: (path: string) => void,
+  onOpenExternalFile?: (path: string) => void,
+  key?: string,
+) {
+  if (token.kind === 'image') {
+    return (
+      <img
+        className="my-3 max-h-[24rem] rounded-[14px] border border-white/8 bg-black/20"
+        key={key}
+        src={toImageSource(token.target)}
+        alt={token.alt || 'Image'}
+      />
+    )
+  }
+
+  if (looksLikeWebUrl(token.target)) {
+    return (
+      <a
+        className="font-medium text-[#9dbbf0] underline decoration-[#9dbbf0]/25 underline-offset-3 transition hover:text-[#bdd0f8] hover:decoration-[#bdd0f8]/45"
+        href={token.target}
+        key={key}
+        rel="noreferrer"
+        target="_blank"
+      >
+        {token.label}
+      </a>
+    )
+  }
+
+  return renderFileChip(
+    token.label,
+    token.target,
+    resolveFileReference,
+    onOpenFileReference,
+    onOpenExternalFile,
+    key,
+  )
 }
 
 function renderContent(

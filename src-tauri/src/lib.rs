@@ -9,6 +9,9 @@ use anyhow::{Context, Result as AnyhowResult, anyhow};
 use kodeks_core::{ModelOption, RuntimeHandle, SessionSnapshot, ThreadConfigOverride, UserInputItem};
 use serde::Deserialize;
 use tauri::{Emitter, Manager, State};
+use workspace_store::WorkspaceStorePayload;
+
+mod workspace_store;
 
 struct DesktopState {
     runtime: RuntimeHandle,
@@ -112,6 +115,21 @@ async fn refresh_rate_limits(state: State<'_, DesktopState>) -> Result<SessionSn
         .refresh_rate_limits()
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn load_workspace_store(app: tauri::AppHandle) -> Result<WorkspaceStorePayload, String> {
+    let base_dir = workspace_store_base_dir(&app).map_err(|error| error.to_string())?;
+    workspace_store::load_workspace_store(&base_dir).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn save_workspace_store(
+    app: tauri::AppHandle,
+    store: WorkspaceStorePayload,
+) -> Result<(), String> {
+    let base_dir = workspace_store_base_dir(&app).map_err(|error| error.to_string())?;
+    workspace_store::save_workspace_store(&base_dir, &store).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -393,9 +411,7 @@ pub fn run() {
         .setup(|app| {
             let single_instance = SingleInstanceGuard::acquire_for_current_session()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
-            let account_storage_dir = app
-                .path()
-                .app_data_dir()
+            let account_storage_dir = workspace_store_base_dir(&app.handle())
                 .map_err(|error| std::io::Error::other(error.to_string()))?
                 .join("account-vault");
             let runtime = RuntimeHandle::new(account_storage_dir);
@@ -427,6 +443,8 @@ pub fn run() {
     get_snapshot,
     refresh_runtime,
     refresh_rate_limits,
+    load_workspace_store,
+    save_workspace_store,
     restart_runtime,
             select_thread,
             start_thread,
@@ -461,6 +479,12 @@ fn image_extension_for_mime(mime_type: Option<&str>) -> &'static str {
         "image/gif" => "gif",
         _ => "png",
     }
+}
+
+fn workspace_store_base_dir(app: &tauri::AppHandle) -> AnyhowResult<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .map_err(|error| anyhow!(error.to_string()))
 }
 
 fn resolve_workspace_path(base_dir: &str, relative_path: &str) -> AnyhowResult<PathBuf> {

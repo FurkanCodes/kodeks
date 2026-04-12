@@ -28,7 +28,7 @@ const DIFF_CAP: usize = 24_000;
 const TIMELINE_CAP: usize = 240;
 const APPROVAL_CAP: usize = 80;
 const STREAM_PUBLISH_INTERVAL: Duration = Duration::from_millis(40);
-const THREAD_PAGE_SIZE: usize = 40;
+const THREAD_LIST_PAGE_SIZE: usize = 100;
 const ACCOUNT_SWITCH_REFRESH_ATTEMPTS: usize = 10;
 const ACCOUNT_SWITCH_REFRESH_DELAY: Duration = Duration::from_millis(200);
 
@@ -1175,24 +1175,32 @@ impl Controller {
 
     async fn fetch_thread_list(&mut self, archived: bool) -> Result<Vec<ThreadSummary>> {
         let app_server = self.app_server()?;
-        let response = app_server
-            .request(
-                "thread/list",
-                Some(json!({
-                    "limit": THREAD_PAGE_SIZE,
-                    "archived": archived,
-                })),
-            )
-            .await?;
+        let mut cursor = None;
+        let mut summaries = Vec::new();
+        let mut seen_ids = HashSet::new();
 
-        Ok(response
-            .get("data")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|thread| self.thread_summary_from_value(thread))
-            .collect())
+        loop {
+            let response = app_server
+                .request("thread/list", Some(build_thread_list_payload(archived, cursor.as_deref())))
+                .await?;
+
+            let page = response
+                .get("data")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|thread| self.thread_summary_from_value(&thread));
+            extend_thread_summaries(&mut summaries, &mut seen_ids, page);
+
+            cursor = next_thread_list_cursor(&response);
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        sort_thread_summaries(&mut summaries);
+        Ok(summaries)
     }
 
     async fn select_thread_flow(
@@ -2561,6 +2569,35 @@ fn parse_model_option(value: &Value) -> Option<ModelOption> {
     })
 }
 
+fn build_thread_list_payload(archived: bool, cursor: Option<&str>) -> Value {
+    json!({
+        "archived": archived,
+        "cursor": cursor,
+        "limit": THREAD_LIST_PAGE_SIZE,
+        "sortKey": "updated_at",
+    })
+}
+
+fn next_thread_list_cursor(response: &Value) -> Option<String> {
+    stringish_at(response, &["nextCursor", "next_cursor"])
+}
+
+fn extend_thread_summaries(
+    summaries: &mut Vec<ThreadSummary>,
+    seen_ids: &mut HashSet<String>,
+    page: impl IntoIterator<Item = ThreadSummary>,
+) {
+    for summary in page {
+        if seen_ids.insert(summary.id.clone()) {
+            summaries.push(summary);
+        }
+    }
+}
+
+fn sort_thread_summaries(summaries: &mut [ThreadSummary]) {
+    summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+}
+
 fn fallback_model_description(model: &str, display_name: &str) -> String {
     let normalized = model.trim().to_ascii_lowercase();
     let display = display_name.trim().to_ascii_lowercase();
@@ -3905,20 +3942,23 @@ fn format_duration_ms(milliseconds: f64) -> String {
 mod tests {
     use super::{
         build_account_snapshot, build_approval_entry, build_thread_resume_payload,
-        build_thread_start_payload, build_turn_input, build_turn_interrupt_payload,
-        build_turn_start_payload, build_turn_steer_payload, cap_approval_entries,
-        cap_timeline_entries, command_execution_metadata, fallback_thread_summary,
-        format_approval_body, format_duration_ms, login_notice, map_generic_approval_decision,
-        parse_model_option, parse_reasoning_effort_option, parse_reasoning_effort_options,
-        push_capped, redact_json_value, sanitize_trace_message,
-        saved_account_error_requires_reauth, should_publish_stream_snapshot,
-        truncate_with_notice, AccountSnapshot, ApprovalEntry, Controller, MetadataRow,
-        SavedAccountView, TimelineEntry, OUTPUT_CAP,
+        build_thread_list_payload, build_thread_start_payload, build_turn_input,
+        build_turn_interrupt_payload, build_turn_start_payload, build_turn_steer_payload,
+        cap_approval_entries, cap_timeline_entries, command_execution_metadata,
+        extend_thread_summaries, fallback_thread_summary, format_approval_body,
+        format_duration_ms, login_notice, map_generic_approval_decision,
+        next_thread_list_cursor, parse_model_option, parse_reasoning_effort_option,
+        parse_reasoning_effort_options, push_capped, redact_json_value,
+        sanitize_trace_message, saved_account_error_requires_reauth,
+        should_publish_stream_snapshot, sort_thread_summaries, truncate_with_notice,
+        AccountSnapshot, ApprovalEntry, Controller, MetadataRow, SavedAccountView,
+        TimelineEntry, OUTPUT_CAP,
     };
     use crate::{ReasoningEffortOption, ThreadConfigOverride};
     use kodeks_protocol::ProtocolEvent;
     use serde::Deserialize;
     use serde_json::{json, Value};
+    use std::collections::HashSet;
     use std::time::{Duration, Instant};
     use tokio::sync::{mpsc, watch};
 
@@ -4740,6 +4780,56 @@ mod tests {
         let interrupt = build_turn_interrupt_payload("thread-1", "turn-9");
         assert_eq!(interrupt["threadId"], "thread-1");
         assert_eq!(interrupt["turnId"], "turn-9");
+    }
+
+    #[test]
+    fn thread_list_payload_tracks_archive_sort_and_cursor() {
+        let first_page = build_thread_list_payload(false, None);
+        assert_eq!(first_page["archived"], false);
+        assert_eq!(first_page["limit"], 100);
+        assert_eq!(first_page["sortKey"], "updated_at");
+        assert!(first_page["cursor"].is_null());
+
+        let archived_page = build_thread_list_payload(true, Some("cursor-2"));
+        assert_eq!(archived_page["archived"], true);
+        assert_eq!(archived_page["cursor"], "cursor-2");
+    }
+
+    #[test]
+    fn thread_list_cursor_parser_stops_when_no_next_cursor_is_present() {
+        assert_eq!(
+            next_thread_list_cursor(&json!({ "nextCursor": "cursor-9" })),
+            Some("cursor-9".to_string())
+        );
+        assert_eq!(next_thread_list_cursor(&json!({})), None);
+        assert_eq!(next_thread_list_cursor(&json!({ "nextCursor": null })), None);
+    }
+
+    #[test]
+    fn thread_summary_pages_dedupe_and_sort_by_updated_at() {
+        let mut summaries = Vec::new();
+        let mut seen_ids = HashSet::new();
+
+        let mut first = fallback_thread_summary("thread-1", "/repo");
+        first.updated_at = 30;
+        let mut second = fallback_thread_summary("thread-2", "/repo");
+        second.updated_at = 10;
+        let mut duplicate = fallback_thread_summary("thread-1", "/repo");
+        duplicate.updated_at = 5;
+        let mut third = fallback_thread_summary("thread-3", "/repo");
+        third.updated_at = 20;
+
+        extend_thread_summaries(&mut summaries, &mut seen_ids, vec![first, second]);
+        extend_thread_summaries(&mut summaries, &mut seen_ids, vec![duplicate, third]);
+        sort_thread_summaries(&mut summaries);
+
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| (summary.id.as_str(), summary.updated_at))
+                .collect::<Vec<_>>(),
+            vec![("thread-1", 30), ("thread-3", 20), ("thread-2", 10)]
+        );
     }
 
     #[tokio::test]

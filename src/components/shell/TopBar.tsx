@@ -1,10 +1,12 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { MouseEvent, ReactNode } from 'react'
 import {
+  ArchiveIcon,
   ArrowLeftIcon,
   ArrowRightIcon,
   BranchIcon,
   FileCodeIcon,
+  PinIcon,
   SidebarCollapseIcon,
   SidebarExpandIcon,
   TerminalIcon,
@@ -20,6 +22,8 @@ type TopBarProps = {
   canGoBack: boolean
   canGoForward: boolean
   runState: TopBarRunState
+  titlePinned?: boolean
+  onTitleAccessoryClick?: () => void
   changesCount: number
   changesDisabled: boolean
   changesOpen: boolean
@@ -153,6 +157,31 @@ function DragRegion(props: {
   )
 }
 
+function TitlePill(props: {
+  title: string
+  pinned?: boolean
+  onAccessoryClick?: () => void
+}) {
+  return (
+    <div className="inline-flex max-w-full items-center gap-2 rounded-[10px] border border-white/[0.05] bg-white/[0.045] pl-3 pr-1.5 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+      <PinIcon className={`h-3.25 w-3.25 shrink-0 ${props.pinned ? 'text-neutral-300' : 'text-neutral-500'}`} />
+      <span className="truncate text-[13px] font-medium tracking-[-0.02em] text-neutral-100">
+        {props.title}
+      </span>
+      {props.onAccessoryClick ? (
+        <button
+          type="button"
+          title="Archive thread"
+          onClick={props.onAccessoryClick}
+          className="flex size-6 shrink-0 items-center justify-center rounded-[7px] text-neutral-500 transition hover:bg-white/[0.06] hover:text-neutral-200"
+        >
+          <ArchiveIcon className="h-3.25 w-3.25" />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 export function TopBar(props: TopBarProps) {
   const SidebarToggleIcon = props.sidebarCollapsed ? SidebarExpandIcon : SidebarCollapseIcon
 
@@ -201,9 +230,11 @@ export function TopBar(props: TopBarProps) {
           enabled={props.isMacOs}
           className={`min-w-0 flex-1 select-none ${props.isMacOs ? 'ml-3' : 'ml-2.5'}`}
         >
-          <span className="block truncate text-[13px] font-medium tracking-[-0.02em] text-neutral-200">
-            {props.title}
-          </span>
+          <TitlePill
+            title={props.title}
+            pinned={props.titlePinned}
+            onAccessoryClick={props.onTitleAccessoryClick}
+          />
         </DragRegion>
       </div>
 

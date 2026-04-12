@@ -14,28 +14,24 @@ function makeStore(): WorkspaceStore {
   return {
     projects: [
       {
-        id: '/work/alpha',
         rootPath: '/work/alpha',
         label: 'Alpha',
         lastUsedAt: 40,
         removed: false,
       },
       {
-        id: '/work/bravo',
         rootPath: '/work/bravo',
         label: 'Bravo',
         lastUsedAt: 90,
         removed: false,
       },
       {
-        id: '/work/hidden',
         rootPath: '/work/hidden',
         label: 'Hidden',
         lastUsedAt: 100,
         removed: true,
       },
     ],
-    recentRoots: ['/work/bravo', '/work/alpha'],
     threadPreferences: {},
     ui: {
       sidebarCollapsed: false,
@@ -116,6 +112,7 @@ test('buildSidebarGroups marks the active live thread inside its project bucket'
       label: 'Alpha thread',
       active: true,
       live: true,
+      updatedAt: 10,
       accountTag: null,
     },
   ])
@@ -140,6 +137,71 @@ test('buildSidebarGroups shows a subtle account tag when thread account differs 
   }
 
   assert.equal(alpha.threads[0]?.accountTag, 'second@example.com')
+})
+
+test('buildSidebarGroups merges saved project roots with thread roots when only trailing slashes differ', () => {
+  const groups = buildSidebarGroups(
+    [
+      {
+        id: 'thread-drumkit',
+        preview: 'Analyze the app',
+        name: null,
+        cwd: '/work/drumkit',
+        status: 'idle',
+        model_provider: 'openai',
+        updated_at: 40,
+        repo: '/work/drumkit',
+        branch: 'main',
+        presence: 'cached',
+        turn_count: 1,
+      },
+    ],
+    {
+      projects: [
+        {
+          rootPath: '/work/drumkit/',
+          label: 'Drumkit',
+          lastUsedAt: 50,
+          removed: false,
+        },
+      ],
+      threadPreferences: {},
+      ui: {
+        sidebarCollapsed: false,
+        showComposerRateLimits: true,
+      },
+    },
+    '/work/drumkit/',
+    'thread-drumkit',
+    {},
+    null,
+    null,
+    0,
+  )
+
+  assert.equal(groups.filter((group) => group.label === 'Drumkit').length, 1)
+  assert.equal(groups[0]?.key, '/work/drumkit')
+  assert.equal(groups[0]?.threads.length, 1)
+})
+
+test('buildSidebarGroups respects persisted expanded state per project group', () => {
+  const groups = buildSidebarGroups(
+    makeThreads(),
+    makeStore(),
+    '/work/alpha',
+    'thread-1',
+    {
+      '/work/alpha': false,
+      other: false,
+    },
+    null,
+    null,
+    0,
+  )
+
+  assert.equal(groups.find((group) => group.key === '/work/alpha')?.expanded, false)
+  assert.equal(groups.find((group) => group.key === 'other')?.expanded, false)
+  assert.equal(groups.find((group) => group.key === '/work/bravo')?.expanded, true)
 })
 
 test('mostRecentProjectRoot ignores removed projects', () => {

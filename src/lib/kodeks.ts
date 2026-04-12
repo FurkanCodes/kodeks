@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import type { WorkspaceStore } from './workspaceStore'
 
 export type Snapshot = {
   app_name: string
@@ -199,6 +200,14 @@ export async function refreshRuntime() {
 
 export async function refreshRateLimits() {
   return invoke<Snapshot>('refresh_rate_limits')
+}
+
+export async function loadWorkspaceStore() {
+  return invoke<WorkspaceStore>('load_workspace_store')
+}
+
+export async function saveWorkspaceStore(store: WorkspaceStore) {
+  return invoke<void>('save_workspace_store', { store })
 }
 
 export async function restartRuntime() {

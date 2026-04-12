@@ -1,11 +1,12 @@
 import type { Snapshot } from './kodeks.ts'
-import { defaultProjectLabel, type WorkspaceStore } from './workspaceStore.ts'
+import { defaultProjectLabel, normalizeProjectRoot, type WorkspaceStore } from './workspaceStore.ts'
 
 export type SidebarThread = {
   id: string
   label: string
   active: boolean
   live: boolean
+  updatedAt: number
   accountTag?: string | null
 }
 
@@ -19,7 +20,8 @@ export type SidebarGroup = {
 }
 
 export function projectRootForThread(thread: Snapshot['threads'][number]) {
-  return thread.repo || thread.cwd || null
+  const rootPath = thread.repo || thread.cwd || null
+  return rootPath ? normalizeProjectRoot(rootPath) : null
 }
 
 export function mostRecentProjectRoot(store: WorkspaceStore) {
@@ -39,7 +41,8 @@ export function buildSidebarGroups(
   savedAccountCount: number,
 ): SidebarGroup[] {
   const buckets = new Map<string, SidebarGroup>()
-  const projectMap = new Map(store.projects.map((project) => [project.rootPath, project]))
+  const normalizedActiveProjectRoot = activeProjectRoot ? normalizeProjectRoot(activeProjectRoot) : null
+  const projectMap = new Map(store.projects.map((project) => [normalizeProjectRoot(project.rootPath), project]))
   const sortedThreads = [...threads].sort((left, right) => right.updated_at - left.updated_at)
 
   const ensureBucket = (key: string, label: string, rootPath: string | null, active = false) => {
@@ -64,11 +67,12 @@ export function buildSidebarGroups(
   for (const project of store.projects
     .filter((item) => !item.removed)
     .sort((left, right) => right.lastUsedAt - left.lastUsedAt)) {
+    const rootPath = normalizeProjectRoot(project.rootPath)
     ensureBucket(
-      project.rootPath,
-      project.label || defaultProjectLabel(project.rootPath),
-      project.rootPath,
-      project.rootPath === activeProjectRoot,
+      rootPath,
+      project.label || defaultProjectLabel(rootPath),
+      rootPath,
+      rootPath === normalizedActiveProjectRoot,
     )
   }
 
@@ -82,13 +86,14 @@ export function buildSidebarGroups(
       key,
       label,
       removed ? null : rootPath,
-      rootPath === activeProjectRoot || thread.id === activeThreadId,
+      rootPath === normalizedActiveProjectRoot || thread.id === activeThreadId,
     )
     bucket.threads.push({
       id: thread.id,
       label: thread.name || thread.preview || 'Untitled thread',
       active: thread.id === activeThreadId,
       live: Boolean(activeTurnId) && thread.id === activeThreadId,
+      updatedAt: thread.updated_at,
       accountTag: threadAccountTag(thread, activeAccountId, savedAccountCount),
     })
   }
@@ -96,7 +101,7 @@ export function buildSidebarGroups(
   const orderedRoots = store.projects
     .filter((project) => !project.removed)
     .sort((left, right) => right.lastUsedAt - left.lastUsedAt)
-    .map((project) => project.rootPath)
+    .map((project) => normalizeProjectRoot(project.rootPath))
 
   const orderedGroups = orderedRoots.map((root) => buckets.get(root)).filter(Boolean) as SidebarGroup[]
   const remainder = [...buckets.values()].filter((group) => !orderedRoots.includes(group.key))

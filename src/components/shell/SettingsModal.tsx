@@ -448,6 +448,7 @@ export function SettingsModal(props: SettingsModalProps) {
               <SearchIcon className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-500" />
               <input
                 type="text"
+                autoFocus
                 value={props.search}
                 placeholder="Search settings..."
                 onChange={(event) => props.onSearchChange(event.currentTarget.value)}
