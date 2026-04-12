@@ -13,6 +13,7 @@ import {
   type ChatMessage,
   type QuickStartSuggestion,
 } from './components/shell/MessageTimeline'
+import { GitBranchBlockedDialog } from './components/shell/GitBranchBlockedDialog'
 import { GitCommitDialog } from './components/shell/GitCommitDialog'
 import {
   SettingsModal,
@@ -232,6 +233,11 @@ type RateLimitSummaryItem = {
   tone: 'calm' | 'warning' | 'muted'
 }
 
+type GitBranchBlockedDialogState = {
+  branchName: string
+  mode: 'checkout' | 'create_and_checkout'
+}
+
 type ShellNavigationEntry =
   | { kind: 'project'; rootPath: string }
   | { kind: 'thread'; threadId: string }
@@ -334,7 +340,8 @@ function App() {
   const [gitCommitSubject, setGitCommitSubject] = useState('')
   const [gitCommitBody, setGitCommitBody] = useState('')
   const [gitCommitError, setGitCommitError] = useState<string | null>(null)
-  const [gitCommitNextStep, setGitCommitNextStep] = useState<'commit' | 'commit_push'>('commit')
+  const [gitCommitNextStep, setGitCommitNextStep] = useState<'commit' | 'commit_push' | 'commit_pr'>('commit')
+  const [gitBranchBlockedDialog, setGitBranchBlockedDialog] = useState<GitBranchBlockedDialogState | null>(null)
   const [composerAttachments, setComposerAttachments] = useState<ComposerImageAttachment[]>([])
   const [composerEngaged, setComposerEngaged] = useState(false)
   const [composerResetToken, setComposerResetToken] = useState(0)
@@ -445,11 +452,35 @@ function App() {
     () => summarizeGitCommitScope(projectGit, gitCommitIncludeUnstaged),
     [gitCommitIncludeUnstaged, projectGit],
   )
-  const autoGitCommitMessage = useMemo(
-    () => buildAutomaticGitCommitMessage(projectGit, gitCommitIncludeUnstaged),
-    [gitCommitIncludeUnstaged, projectGit],
-  )
   const gitThreadBranchContext = activeThread?.branch || snapshot.session.branch || null
+  const gitCommitCanPush = Boolean(projectGit?.branch.current && !projectGit.branch.detached)
+  const gitPullRequestUrl = useMemo(() => buildGitHubPullRequestUrl(projectGit), [projectGit])
+  const gitCommitCanCreatePullRequest = Boolean(gitCommitCanPush && gitPullRequestUrl)
+  const gitThreadBranchWarning =
+    gitThreadBranchContext && gitThreadBranchContext !== (activeBranchLabel || null)
+      ? `The open chat thread is still on ${gitThreadBranchContext}.`
+      : null
+  const gitCommitWarnings = useMemo(
+    () =>
+      buildGitCommitWarnings({
+        git: projectGit,
+        includeUnstaged: gitCommitIncludeUnstaged,
+        nextStep: gitCommitNextStep,
+        selectedFileCount: gitCommitScopeSummary.fileCount,
+        threadBranchWarning: gitThreadBranchWarning,
+        canPush: gitCommitCanPush,
+        canCreatePullRequest: gitCommitCanCreatePullRequest,
+      }),
+    [
+      gitCommitCanCreatePullRequest,
+      gitCommitCanPush,
+      gitCommitIncludeUnstaged,
+      gitCommitNextStep,
+      gitCommitScopeSummary.fileCount,
+      gitThreadBranchWarning,
+      projectGit,
+    ],
+  )
   const gitCanPush = Boolean(projectGit?.branch.current && !projectGit.branch.detached && projectGit.branch.ahead > 0)
 
   const threadViewKey = useMemo(() => {
@@ -1090,6 +1121,7 @@ function App() {
     setGitCommitSubject('')
     setGitCommitBody('')
     setGitCommitError(null)
+    setGitBranchBlockedDialog(null)
   }, [gitProjectRoot])
 
   useEffect(() => {
@@ -1665,13 +1697,29 @@ function App() {
     setPanelMode('changes')
   }
 
+  function openGitBranchBlockedDialog(
+    branchName: string,
+    mode: GitBranchBlockedDialogState['mode'],
+  ) {
+    setGitBranchBlockedDialog({
+      branchName,
+      mode,
+    })
+  }
+
   async function handleCreateProjectGitBranch(branchName: string) {
     setProjectGitActionBusy(true)
     setError(null)
+    setGitBranchBlockedDialog(null)
     try {
       applyProjectGitMutation(await createGitBranch(currentProjectRoot, branchName, true))
     } catch (nextError) {
-      setError(stringifyError(nextError))
+      const message = stringifyError(nextError)
+      if (isDirtyCheckoutBlockedError(message)) {
+        openGitBranchBlockedDialog(branchName, 'create_and_checkout')
+      } else {
+        setError(message)
+      }
     } finally {
       setProjectGitActionBusy(false)
     }
@@ -1680,10 +1728,16 @@ function App() {
   async function handleCheckoutProjectGitBranch(branchName: string) {
     setProjectGitActionBusy(true)
     setError(null)
+    setGitBranchBlockedDialog(null)
     try {
       applyProjectGitMutation(await checkoutGitBranch(currentProjectRoot, branchName))
     } catch (nextError) {
-      setError(stringifyError(nextError))
+      const message = stringifyError(nextError)
+      if (isDirtyCheckoutBlockedError(message)) {
+        openGitBranchBlockedDialog(branchName, 'checkout')
+      } else {
+        setError(message)
+      }
     } finally {
       setProjectGitActionBusy(false)
     }
@@ -1694,13 +1748,23 @@ function App() {
       return
     }
 
+    setGitBranchBlockedDialog(null)
     setGitCommitError(null)
     setGitCommitSubject('')
     setGitCommitBody('')
     setGitCommitIncludeUnstaged(
       projectGit.counts.staged === 0 && (projectGit.counts.working > 0 || projectGit.counts.untracked > 0),
     )
-    setGitCommitNextStep(projectGit.counts.total === 0 && projectGit.branch.ahead > 0 ? 'commit_push' : 'commit')
+    setGitCommitNextStep(
+      projectGit.counts.total === 0 &&
+        projectGit.branch.ahead > 0 &&
+        projectGit.branch.current &&
+        !projectGit.branch.detached
+        ? gitCommitCanCreatePullRequest
+          ? 'commit_pr'
+          : 'commit_push'
+        : 'commit',
+    )
     setGitCommitOpen(true)
   }
 
@@ -1752,17 +1816,19 @@ function App() {
     }
   }
 
-  async function handlePushProjectGitBranch() {
+  async function handlePushProjectGitBranch(options?: { closeOnSuccess?: boolean }) {
     setProjectGitActionBusy(true)
     setError(null)
     setGitCommitError(null)
     try {
       applyProjectGitMutation(await pushGitBranch(currentProjectRoot))
-      setGitCommitOpen(false)
-      setGitCommitIncludeUnstaged(false)
-      setGitCommitSubject('')
-      setGitCommitBody('')
-      setGitCommitNextStep('commit')
+      if (options?.closeOnSuccess !== false) {
+        setGitCommitOpen(false)
+        setGitCommitIncludeUnstaged(false)
+        setGitCommitSubject('')
+        setGitCommitBody('')
+        setGitCommitNextStep('commit')
+      }
       return true
     } catch (nextError) {
       const message = stringifyError(nextError)
@@ -1776,6 +1842,11 @@ function App() {
 
   async function handleSubmitGitCommitFlow() {
     if (gitCommitNextStep === 'commit_push') {
+      if (!gitCommitCanPush) {
+        setGitCommitError('Detached HEAD cannot be pushed. Switch back to a named branch first.')
+        return
+      }
+
       const hasChanges = gitCommitScopeSummary.fileCount > 0
       if (hasChanges) {
         const committed = await handleCommitProjectGitIndex(
@@ -1791,6 +1862,49 @@ function App() {
 
       if (projectGit?.branch.ahead || hasChanges) {
         await handlePushProjectGitBranch()
+      }
+      return
+    }
+
+    if (gitCommitNextStep === 'commit_pr') {
+      if (!gitCommitCanCreatePullRequest || !gitPullRequestUrl) {
+        setGitCommitError('GitHub pull request creation needs a GitHub remote and a named branch.')
+        return
+      }
+
+      const hasChanges = gitCommitScopeSummary.fileCount > 0
+      if (hasChanges) {
+        const committed = await handleCommitProjectGitIndex(
+          gitCommitSubject,
+          gitCommitBody,
+          gitCommitIncludeUnstaged,
+          { closeOnSuccess: false },
+        )
+        if (!committed) {
+          return
+        }
+      }
+
+      const needsPush = Boolean(projectGit?.branch.ahead || hasChanges)
+      if (needsPush) {
+        const pushed = await handlePushProjectGitBranch({ closeOnSuccess: false })
+        if (!pushed) {
+          return
+        }
+      }
+
+      try {
+        await openExternalUrl(gitPullRequestUrl)
+        setGitCommitOpen(false)
+        setGitCommitIncludeUnstaged(false)
+        setGitCommitSubject('')
+        setGitCommitBody('')
+        setGitCommitNextStep('commit')
+        setGitCommitError(null)
+      } catch (nextError) {
+        const message = stringifyError(nextError)
+        setGitCommitError(message)
+        setError(message)
       }
       return
     }
@@ -2274,6 +2388,17 @@ function App() {
         </div>
       </div>
 
+      <GitBranchBlockedDialog
+        open={Boolean(gitBranchBlockedDialog)}
+        branchName={gitBranchBlockedDialog?.branchName || ''}
+        mode={gitBranchBlockedDialog?.mode || 'checkout'}
+        fileCount={composerGitSummary.fileCount}
+        additions={composerGitSummary.additions}
+        deletions={composerGitSummary.deletions}
+        onClose={() => setGitBranchBlockedDialog(null)}
+        onOpenCommit={handleOpenGitCommitDialog}
+      />
+
       <GitCommitDialog
         open={gitCommitOpen}
         busy={projectGitActionBusy}
@@ -2285,14 +2410,10 @@ function App() {
         includeUnstaged={gitCommitIncludeUnstaged}
         subject={gitCommitSubject}
         body={gitCommitBody}
-        autoSubject={autoGitCommitMessage.subject}
-        autoBody={autoGitCommitMessage.body}
         nextStep={gitCommitNextStep}
-        threadBranchLabel={
-          gitThreadBranchContext && gitThreadBranchContext !== (activeBranchLabel || null)
-            ? gitThreadBranchContext
-            : null
-        }
+        canPush={gitCommitCanPush}
+        canCreatePullRequest={gitCommitCanCreatePullRequest}
+        warnings={gitCommitWarnings}
         error={gitCommitError}
         onClose={() => setGitCommitOpen(false)}
         onToggleIncludeUnstaged={setGitCommitIncludeUnstaged}
@@ -4034,6 +4155,110 @@ function formatReasoningEffortLabel(value: string) {
   }
 }
 
+function buildGitCommitWarnings(params: {
+  git: GitProjectSnapshot | null
+  includeUnstaged: boolean
+  nextStep: 'commit' | 'commit_push' | 'commit_pr'
+  selectedFileCount: number
+  threadBranchWarning: string | null
+  canPush: boolean
+  canCreatePullRequest: boolean
+}) {
+  const warnings: string[] = []
+
+  if (params.threadBranchWarning) {
+    warnings.push(params.threadBranchWarning)
+  }
+
+  const unstagedCount = (params.git?.counts.working || 0) + (params.git?.counts.untracked || 0)
+  if (!params.includeUnstaged && unstagedCount > 0) {
+    warnings.push(
+      `${unstagedCount} ${unstagedCount === 1 ? 'file is' : 'files are'} still unstaged and will stay out of this commit.`,
+    )
+  }
+
+  if (params.nextStep === 'commit' && params.selectedFileCount === 0) {
+    warnings.push('No changes are selected for commit yet.')
+  }
+
+  if (params.nextStep === 'commit_push') {
+    if (!params.canPush) {
+      warnings.push('Detached HEAD cannot be pushed. Switch back to a named branch first.')
+    } else if (params.selectedFileCount === 0 && (params.git?.branch.ahead || 0) > 0) {
+      const aheadCount = params.git?.branch.ahead || 0
+      warnings.push(
+        `Continue will push ${aheadCount} existing local ${aheadCount === 1 ? 'commit' : 'commits'} without creating a new commit.`,
+      )
+    }
+
+    if ((params.git?.branch.behind || 0) > 0) {
+      const behindCount = params.git?.branch.behind || 0
+      warnings.push(
+        `This branch is behind upstream by ${behindCount} ${behindCount === 1 ? 'commit' : 'commits'}. Push may be rejected until you sync.`,
+      )
+    }
+  }
+
+  if (params.nextStep === 'commit_pr') {
+    if (!params.canCreatePullRequest) {
+      warnings.push('GitHub pull request creation needs a GitHub remote, default branch, and named branch.')
+    } else if (params.selectedFileCount === 0 && (params.git?.branch.ahead || 0) > 0) {
+      const aheadCount = params.git?.branch.ahead || 0
+      warnings.push(
+        `Continue will push ${aheadCount} existing local ${aheadCount === 1 ? 'commit' : 'commits'} and open the GitHub PR page.`,
+      )
+    }
+
+    if ((params.git?.branch.behind || 0) > 0) {
+      const behindCount = params.git?.branch.behind || 0
+      warnings.push(
+        `This branch is behind upstream by ${behindCount} ${behindCount === 1 ? 'commit' : 'commits'}. Create PR after syncing if GitHub rejects the push.`,
+      )
+    }
+  }
+
+  return warnings
+}
+
+function buildGitHubPullRequestUrl(git: GitProjectSnapshot | null) {
+  if (!git) {
+    return null
+  }
+
+  const repoUrl = normalizeGitHubOriginUrl(git.origin_url)
+  const currentBranch = git.branch.current?.trim()
+  const defaultBranch = git.branch.default?.trim()
+  if (!repoUrl || !currentBranch || !defaultBranch || currentBranch === defaultBranch) {
+    return null
+  }
+
+  return `${repoUrl}/compare/${encodeURIComponent(defaultBranch)}...${encodeURIComponent(currentBranch)}?expand=1`
+}
+
+function normalizeGitHubOriginUrl(originUrl?: string | null) {
+  const trimmed = originUrl?.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  const sshMatch = trimmed.match(/^git@github\.com:(.+?)(?:\.git)?$/i)
+  if (sshMatch?.[1]) {
+    return `https://github.com/${sshMatch[1].replace(/\.git$/i, '')}`
+  }
+
+  const sshUrlMatch = trimmed.match(/^ssh:\/\/git@github\.com\/(.+?)(?:\.git)?\/?$/i)
+  if (sshUrlMatch?.[1]) {
+    return `https://github.com/${sshUrlMatch[1].replace(/\.git$/i, '')}`
+  }
+
+  const httpsMatch = trimmed.match(/^https?:\/\/github\.com\/(.+?)(?:\.git)?\/?$/i)
+  if (httpsMatch?.[1]) {
+    return `https://github.com/${httpsMatch[1].replace(/\.git$/i, '')}`
+  }
+
+  return null
+}
+
 function defaultReasoningEffortDescription(value: string) {
   switch (value.toLowerCase()) {
     case 'low':
@@ -4151,6 +4376,10 @@ function stringifyError(error: unknown) {
     return error.message
   }
   return String(error)
+}
+
+function isDirtyCheckoutBlockedError(message: string) {
+  return message.includes('branch switching is blocked while the worktree has changes')
 }
 
 export default App

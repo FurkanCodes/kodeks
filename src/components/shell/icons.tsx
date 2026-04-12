@@ -21,6 +21,7 @@ import {
   FolderGit2,
   FolderPlus,
   GitBranch,
+  GitPullRequest,
   Keyboard,
   Pin,
   LogOut,
@@ -138,6 +139,10 @@ export function SparkleIcon(props: IconProps) {
 
 export function BranchIcon(props: IconProps) {
   return renderIcon(GitBranch, props, 1.35)
+}
+
+export function PullRequestIcon(props: IconProps) {
+  return renderIcon(GitPullRequest, props, 1.35)
 }
 
 export function PlayIcon(props: IconProps) {

@@ -281,6 +281,10 @@ pub async fn create_git_branch(
     )
     .await?;
 
+    if checkout {
+        refuse_dirty_checkout(&repo_root).await?;
+    }
+
     run_git(
         &repo_root,
         vec![
@@ -293,7 +297,6 @@ pub async fn create_git_branch(
     .await?;
 
     if checkout {
-        refuse_dirty_checkout(&repo_root).await?;
         run_git(
             &repo_root,
             vec![
@@ -1361,7 +1364,12 @@ impl DiffStat {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitChangeStatus, parse_name_status_z, parse_numstat};
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{GitChangeStatus, create_git_branch, parse_name_status_z, parse_numstat};
 
     #[test]
     fn parse_name_status_z_reads_basic_entries() {
@@ -1402,5 +1410,79 @@ mod tests {
         assert_eq!(parsed["src/App.tsx"].additions, 12);
         assert!(!parsed["src/App.tsx"].binary);
         assert!(parsed["assets/logo.png"].binary);
+    }
+
+    #[tokio::test]
+    async fn create_git_branch_with_checkout_refuses_dirty_worktree_before_creating_branch() {
+        let repo_root = create_temp_repo_path("dirty-checkout-guard");
+        fs::create_dir_all(&repo_root).expect("temp repo directory should be created");
+
+        run_test_git(&repo_root, &["init"]);
+        run_test_git(&repo_root, &["config", "user.name", "Kodeks Test"]);
+        run_test_git(&repo_root, &["config", "user.email", "test@kodeks.local"]);
+
+        fs::write(repo_root.join("notes.txt"), "base\n").expect("seed file should be written");
+        run_test_git(&repo_root, &["add", "notes.txt"]);
+        run_test_git(&repo_root, &["commit", "-m", "init"]);
+
+        fs::write(repo_root.join("notes.txt"), "base\nlocal change\n")
+            .expect("dirty worktree change should be written");
+
+        let error = create_git_branch(&repo_root, "feature/modal", true)
+            .await
+            .expect_err("dirty worktree should block create-and-checkout");
+        assert!(
+            error
+                .to_string()
+                .contains("branch switching is blocked while the worktree has changes"),
+            "unexpected error: {error:#}"
+        );
+
+        let branch_list = run_test_git_output(&repo_root, &["branch", "--list", "feature/modal"]);
+        assert!(
+            branch_list.trim().is_empty(),
+            "feature branch should not be created when checkout is refused"
+        );
+
+        fs::remove_dir_all(&repo_root).expect("temp repo directory should be removed");
+    }
+
+    fn create_temp_repo_path(label: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("kodeks-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    fn run_test_git(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(repo_root)
+            .args(args)
+            .output()
+            .expect("git command should launch");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn run_test_git_output(repo_root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(repo_root)
+            .args(args)
+            .output()
+            .expect("git command should launch");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).to_string()
     }
 }
