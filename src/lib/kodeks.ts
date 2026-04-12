@@ -420,6 +420,10 @@ export async function commitGitIndex(projectRoot: string, request: GitCommitRequ
   return invoke<GitMutationResult>('commit_git_index', { projectRoot, request })
 }
 
+export async function pushGitBranch(projectRoot: string) {
+  return invoke<GitMutationResult>('push_git_branch', { projectRoot })
+}
+
 export async function createGitSnapshot(projectRoot: string) {
   return invoke<GitMutationResult>('create_git_snapshot', { projectRoot })
 }

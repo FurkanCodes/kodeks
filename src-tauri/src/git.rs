@@ -391,6 +391,44 @@ pub async fn commit_git_index(
     })
 }
 
+pub async fn push_git_branch(project_root: impl AsRef<Path>) -> Result<GitMutationResult> {
+    let project_root = normalize_path(project_root.as_ref())?;
+    let repo_root = expect_repo_root(&project_root).await?;
+    let snapshot_before = build_git_project_snapshot(project_root.clone(), repo_root.clone()).await?;
+
+    if snapshot_before.branch.detached {
+        return Err(anyhow!("cannot push detached HEAD"));
+    }
+
+    let current_branch = snapshot_before
+        .branch
+        .current
+        .clone()
+        .ok_or_else(|| anyhow!("current branch is unavailable"))?;
+
+    let args = if snapshot_before.branch.upstream.is_some() {
+        vec![OsString::from("push")]
+    } else {
+        vec![
+            OsString::from("push"),
+            OsString::from("-u"),
+            OsString::from("origin"),
+            OsString::from(current_branch.as_str()),
+        ]
+    };
+
+    run_git(&repo_root, args, WRITE_TIMEOUT, &[0]).await?;
+
+    let snapshot = build_git_project_snapshot(project_root, repo_root).await?;
+    Ok(GitMutationResult {
+        snapshot,
+        summary: format!("Pushed `{current_branch}`."),
+        branch_name: Some(current_branch),
+        commit_sha: None,
+        snapshot_id: None,
+    })
+}
+
 pub async fn create_git_snapshot(project_root: impl AsRef<Path>) -> Result<GitMutationResult> {
     let project_root = normalize_path(project_root.as_ref())?;
     let repo_root = expect_repo_root(&project_root).await?;

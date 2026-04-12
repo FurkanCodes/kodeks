@@ -476,6 +476,13 @@ async fn commit_git_index(
 }
 
 #[tauri::command]
+async fn push_git_branch(project_root: String) -> Result<git::GitMutationResult, String> {
+    git::push_git_branch(project_root)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn create_git_snapshot(project_root: String) -> Result<git::GitMutationResult, String> {
     git::create_git_snapshot(project_root)
         .await
@@ -570,6 +577,7 @@ pub fn run() {
             create_git_branch,
             checkout_git_branch,
             commit_git_index,
+            push_git_branch,
             create_git_snapshot,
             restore_git_snapshot,
             build_git_commit_prompt,

@@ -52,6 +52,7 @@ import {
   type Snapshot,
   readWorkspaceFile,
   readGitFileDiff,
+  pushGitBranch,
   refreshRuntime,
   resolveApproval,
   savePastedImage,
@@ -333,6 +334,7 @@ function App() {
   const [gitCommitSubject, setGitCommitSubject] = useState('')
   const [gitCommitBody, setGitCommitBody] = useState('')
   const [gitCommitError, setGitCommitError] = useState<string | null>(null)
+  const [gitCommitNextStep, setGitCommitNextStep] = useState<'commit' | 'commit_push'>('commit')
   const [composerAttachments, setComposerAttachments] = useState<ComposerImageAttachment[]>([])
   const [composerEngaged, setComposerEngaged] = useState(false)
   const [composerResetToken, setComposerResetToken] = useState(0)
@@ -447,6 +449,8 @@ function App() {
     () => buildAutomaticGitCommitMessage(projectGit, gitCommitIncludeUnstaged),
     [gitCommitIncludeUnstaged, projectGit],
   )
+  const gitThreadBranchContext = activeThread?.branch || snapshot.session.branch || null
+  const gitCanPush = Boolean(projectGit?.branch.current && !projectGit.branch.detached && projectGit.branch.ahead > 0)
 
   const threadViewKey = useMemo(() => {
     if (activeProjectViewRoot) {
@@ -1696,10 +1700,16 @@ function App() {
     setGitCommitIncludeUnstaged(
       projectGit.counts.staged === 0 && (projectGit.counts.working > 0 || projectGit.counts.untracked > 0),
     )
+    setGitCommitNextStep(projectGit.counts.total === 0 && projectGit.branch.ahead > 0 ? 'commit_push' : 'commit')
     setGitCommitOpen(true)
   }
 
-  async function handleCommitProjectGitIndex(subject: string, body: string, includeUnstaged: boolean) {
+  async function handleCommitProjectGitIndex(
+    subject: string,
+    body: string,
+    includeUnstaged: boolean,
+    options?: { closeOnSuccess?: boolean },
+  ) {
     const autoMessage = buildAutomaticGitCommitMessage(projectGit, includeUnstaged)
     const trimmedSubject = subject.trim() || autoMessage.subject
     const trimmedBody = body.trim()
@@ -1725,10 +1735,12 @@ function App() {
           amend: false,
         }),
       )
-      setGitCommitOpen(false)
-      setGitCommitIncludeUnstaged(false)
-      setGitCommitSubject('')
-      setGitCommitBody('')
+      if (options?.closeOnSuccess !== false) {
+        setGitCommitOpen(false)
+        setGitCommitIncludeUnstaged(false)
+        setGitCommitSubject('')
+        setGitCommitBody('')
+      }
       return true
     } catch (nextError) {
       const message = stringifyError(nextError)
@@ -1738,6 +1750,52 @@ function App() {
     } finally {
       setProjectGitActionBusy(false)
     }
+  }
+
+  async function handlePushProjectGitBranch() {
+    setProjectGitActionBusy(true)
+    setError(null)
+    setGitCommitError(null)
+    try {
+      applyProjectGitMutation(await pushGitBranch(currentProjectRoot))
+      setGitCommitOpen(false)
+      setGitCommitIncludeUnstaged(false)
+      setGitCommitSubject('')
+      setGitCommitBody('')
+      setGitCommitNextStep('commit')
+      return true
+    } catch (nextError) {
+      const message = stringifyError(nextError)
+      setGitCommitError(message)
+      setError(message)
+      return false
+    } finally {
+      setProjectGitActionBusy(false)
+    }
+  }
+
+  async function handleSubmitGitCommitFlow() {
+    if (gitCommitNextStep === 'commit_push') {
+      const hasChanges = gitCommitScopeSummary.fileCount > 0
+      if (hasChanges) {
+        const committed = await handleCommitProjectGitIndex(
+          gitCommitSubject,
+          gitCommitBody,
+          gitCommitIncludeUnstaged,
+          { closeOnSuccess: false },
+        )
+        if (!committed) {
+          return
+        }
+      }
+
+      if (projectGit?.branch.ahead || hasChanges) {
+        await handlePushProjectGitBranch()
+      }
+      return
+    }
+
+    await handleCommitProjectGitIndex(gitCommitSubject, gitCommitBody, gitCommitIncludeUnstaged)
   }
 
   async function handleApproval(approval: ApprovalEntry, decision: string) {
@@ -2021,7 +2079,7 @@ function App() {
           codeOpen={effectivePanelMode === 'code'}
           diagnosticsCount={diagnosticsCount}
           diagnosticsOpen={effectivePanelMode === 'diagnostics'}
-          commitReady={Boolean(projectGit && composerGitSummary.fileCount > 0)}
+          commitReady={Boolean(projectGit && (composerGitSummary.fileCount > 0 || gitCanPush))}
           onOpenCommit={projectGit ? handleOpenGitCommitDialog : undefined}
           onToggleSidebar={handleToggleSidebar}
           onGoBack={() => void handleHistoryNavigation(-1)}
@@ -2223,19 +2281,25 @@ function App() {
         fileCount={gitCommitScopeSummary.fileCount}
         additions={gitCommitScopeSummary.additions}
         deletions={gitCommitScopeSummary.deletions}
+        aheadCount={projectGit?.branch.ahead || 0}
         includeUnstaged={gitCommitIncludeUnstaged}
         subject={gitCommitSubject}
         body={gitCommitBody}
         autoSubject={autoGitCommitMessage.subject}
         autoBody={autoGitCommitMessage.body}
+        nextStep={gitCommitNextStep}
+        threadBranchLabel={
+          gitThreadBranchContext && gitThreadBranchContext !== (activeBranchLabel || null)
+            ? gitThreadBranchContext
+            : null
+        }
         error={gitCommitError}
         onClose={() => setGitCommitOpen(false)}
         onToggleIncludeUnstaged={setGitCommitIncludeUnstaged}
         onSubjectChange={setGitCommitSubject}
         onBodyChange={setGitCommitBody}
-        onSubmit={() =>
-          void handleCommitProjectGitIndex(gitCommitSubject, gitCommitBody, gitCommitIncludeUnstaged)
-        }
+        onNextStepChange={setGitCommitNextStep}
+        onSubmit={() => void handleSubmitGitCommitFlow()}
       />
 
       <SettingsModal
