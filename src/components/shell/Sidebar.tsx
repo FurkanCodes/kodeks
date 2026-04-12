@@ -614,7 +614,7 @@ export function Sidebar(props: SidebarProps) {
           <SidebarUtilityButton label="Search" icon={SearchIcon} onClick={props.onSearch} />
           <SidebarUtilityButton label="Plugins" icon={PuzzleIcon} onClick={props.onOpenPlugins} />
           <SidebarUtilityButton
-            label="Automations"
+            label="Skills"
             icon={ClockIcon}
             onClick={props.onOpenAutomations}
           />

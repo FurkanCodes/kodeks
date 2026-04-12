@@ -3,18 +3,22 @@ use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result as AnyhowResult, anyhow};
 use kodeks_core::{ModelOption, RuntimeHandle, SessionSnapshot, ThreadConfigOverride, UserInputItem};
 use serde::Deserialize;
+use serde_json::{Value as JsonValue, json};
 use tauri::{Emitter, Manager, State};
 use workspace_store::WorkspaceStorePayload;
 
+mod catalog;
 mod git;
 mod workspace_store;
 
 struct DesktopState {
+    catalog: Mutex<catalog::CatalogRepository>,
     runtime: RuntimeHandle,
     _single_instance: Option<SingleInstanceGuard>,
 }
@@ -99,6 +103,52 @@ fn session_lock_port_for_scope(scope: &str) -> u16 {
     BASE_PORT + (hash % u32::from(PORT_SPREAD)) as u16
 }
 
+fn catalog_state<'a>(
+    state: &'a State<'_, DesktopState>,
+) -> Result<MutexGuard<'a, catalog::CatalogRepository>, String> {
+    state
+        .catalog
+        .lock()
+        .map_err(|_| "catalog state is unavailable".to_string())
+}
+
+async fn fetch_app_server_plugins(
+    runtime: &RuntimeHandle,
+    project_root: Option<&str>,
+    force_remote_sync: bool,
+) -> Option<catalog::AppServerPluginListResponse> {
+    let mut params = serde_json::Map::new();
+    if let Some(project_root) = project_root.filter(|value| !value.trim().is_empty()) {
+        params.insert("cwds".to_string(), json!([project_root]));
+    }
+    if force_remote_sync {
+        params.insert("forceRemoteSync".to_string(), JsonValue::Bool(true));
+    }
+
+    runtime
+        .request_app_server("plugin/list".to_string(), Some(JsonValue::Object(params)))
+        .await
+        .ok()
+        .and_then(|value| serde_json::from_value::<catalog::AppServerPluginListResponse>(value).ok())
+}
+
+async fn fetch_app_server_plugin_detail(
+    runtime: &RuntimeHandle,
+    locator: &catalog::AppServerPluginLocator,
+) -> Option<catalog::AppServerPluginReadResponse> {
+    runtime
+        .request_app_server(
+            "plugin/read".to_string(),
+            Some(json!({
+                "marketplacePath": locator.marketplace_path,
+                "pluginName": locator.plugin_name,
+            })),
+        )
+        .await
+        .ok()
+        .and_then(|value| serde_json::from_value::<catalog::AppServerPluginReadResponse>(value).ok())
+}
+
 #[tauri::command]
 async fn get_snapshot(state: State<'_, DesktopState>) -> Result<SessionSnapshot, String> {
     state.runtime.snapshot().await.map_err(|error| error.to_string())
@@ -115,6 +165,246 @@ async fn refresh_rate_limits(state: State<'_, DesktopState>) -> Result<SessionSn
         .runtime
         .refresh_rate_limits()
         .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_plugins(
+    state: State<'_, DesktopState>,
+    project_root: Option<String>,
+    force_remote_sync: Option<bool>,
+) -> Result<catalog::PluginCatalogPayload, String> {
+    let app_server_plugins = fetch_app_server_plugins(
+        &state.runtime,
+        project_root.as_deref(),
+        force_remote_sync.unwrap_or(false),
+    )
+    .await;
+    catalog_state(&state)?
+        .list_plugins(project_root.as_deref(), app_server_plugins.as_ref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_plugin_details(
+    state: State<'_, DesktopState>,
+    plugin_id: String,
+    project_root: Option<String>,
+) -> Result<catalog::PluginDetails, String> {
+    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    let locator = if let Some(app_server_plugins) = app_server_plugins.as_ref() {
+        catalog_state(&state)?
+            .resolve_app_server_plugin_locator(&plugin_id, project_root.as_deref(), Some(app_server_plugins))
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+    let app_server_detail = if let Some(locator) = locator.as_ref() {
+        fetch_app_server_plugin_detail(&state.runtime, locator).await
+    } else {
+        None
+    };
+
+    catalog_state(&state)?
+        .get_plugin_details(
+            &plugin_id,
+            project_root.as_deref(),
+            app_server_plugins.as_ref(),
+            app_server_detail.as_ref(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn install_plugin(
+    state: State<'_, DesktopState>,
+    plugin_id: String,
+    project_root: Option<String>,
+) -> Result<catalog::InstalledPluginState, String> {
+    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    let locator = if let Some(app_server_plugins) = app_server_plugins.as_ref() {
+        catalog_state(&state)?
+            .resolve_app_server_plugin_locator(&plugin_id, project_root.as_deref(), Some(app_server_plugins))
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+
+    if let Some(locator) = locator {
+        state
+            .runtime
+            .request_app_server(
+                "plugin/install".to_string(),
+                Some(json!({
+                    "marketplacePath": locator.marketplace_path,
+                    "pluginName": locator.plugin_name,
+                    "forceRemoteSync": true,
+                })),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let refreshed_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+        let refreshed_locator = if let Some(app_server_plugins) = refreshed_plugins.as_ref() {
+            catalog_state(&state)?
+                .resolve_app_server_plugin_locator(&plugin_id, project_root.as_deref(), Some(app_server_plugins))
+                .map_err(|error| error.to_string())?
+        } else {
+            None
+        };
+        let detail = if let Some(locator) = refreshed_locator.as_ref() {
+            fetch_app_server_plugin_detail(&state.runtime, locator).await
+        } else {
+            None
+        };
+
+        return catalog_state(&state)?
+            .get_plugin_details(
+                &plugin_id,
+                project_root.as_deref(),
+                refreshed_plugins.as_ref(),
+                detail.as_ref(),
+            )
+            .map(|details| details.installed_state)
+            .map_err(|error| error.to_string());
+    }
+
+    catalog_state(&state)?
+        .install_plugin(&plugin_id, project_root.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn uninstall_plugin(
+    state: State<'_, DesktopState>,
+    plugin_id: String,
+    project_root: Option<String>,
+) -> Result<catalog::InstalledPluginState, String> {
+    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    let locator = if let Some(app_server_plugins) = app_server_plugins.as_ref() {
+        catalog_state(&state)?
+            .resolve_app_server_plugin_locator(&plugin_id, project_root.as_deref(), Some(app_server_plugins))
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+
+    if locator.is_some() {
+        state
+            .runtime
+            .request_app_server(
+                "plugin/uninstall".to_string(),
+                Some(json!({
+                    "pluginId": plugin_id,
+                    "forceRemoteSync": false,
+                })),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let refreshed_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+        return catalog_state(&state)?
+            .get_plugin_details(&plugin_id, project_root.as_deref(), refreshed_plugins.as_ref(), None)
+            .map(|details| details.installed_state)
+            .map_err(|error| error.to_string());
+    }
+
+    catalog_state(&state)?
+        .uninstall_plugin(&plugin_id, project_root.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_plugin_enabled(
+    state: State<'_, DesktopState>,
+    plugin_id: String,
+    enabled: bool,
+    project_root: Option<String>,
+) -> Result<catalog::InstalledPluginState, String> {
+    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    catalog_state(&state)?
+        .set_plugin_enabled(
+            &plugin_id,
+            enabled,
+            project_root.as_deref(),
+            app_server_plugins.as_ref(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn complete_plugin_auth(
+    state: State<'_, DesktopState>,
+    plugin_id: String,
+    project_root: Option<String>,
+) -> Result<catalog::InstalledPluginState, String> {
+    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    catalog_state(&state)?
+        .complete_plugin_auth(&plugin_id, project_root.as_deref(), app_server_plugins.as_ref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_skills(
+    state: State<'_, DesktopState>,
+    project_root: Option<String>,
+) -> Result<catalog::SkillCatalogPayload, String> {
+    catalog_state(&state)?
+        .list_skills(project_root.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_skill_details(
+    state: State<'_, DesktopState>,
+    skill_id: String,
+    project_root: Option<String>,
+) -> Result<catalog::SkillDetails, String> {
+    catalog_state(&state)?
+        .get_skill_details(&skill_id, project_root.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn install_skill(
+    state: State<'_, DesktopState>,
+    skill_id: String,
+    project_root: Option<String>,
+) -> Result<catalog::SkillRecord, String> {
+    catalog_state(&state)?
+        .install_skill(&skill_id, project_root.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_skill_enabled(
+    state: State<'_, DesktopState>,
+    skill_id: String,
+    enabled: bool,
+    project_root: Option<String>,
+) -> Result<catalog::SkillRecord, String> {
+    catalog_state(&state)?
+        .set_skill_enabled(&skill_id, enabled, project_root.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_skill_scaffold(
+    state: State<'_, DesktopState>,
+    request: catalog::CreateSkillScaffoldRequest,
+) -> Result<catalog::CreateSkillScaffoldResult, String> {
+    catalog_state(&state)?
+        .create_skill_scaffold(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_plugin_scaffold(
+    state: State<'_, DesktopState>,
+    request: catalog::CreatePluginScaffoldRequest,
+) -> Result<catalog::CreatePluginScaffoldResult, String> {
+    catalog_state(&state)?
+        .create_plugin_scaffold(request)
         .map_err(|error| error.to_string())
 }
 
@@ -529,6 +819,7 @@ pub fn run() {
             });
 
             app.manage(DesktopState {
+                catalog: Mutex::new(catalog::CatalogRepository::new_mock()),
                 runtime,
                 _single_instance: single_instance,
             });
@@ -546,6 +837,18 @@ pub fn run() {
     get_snapshot,
     refresh_runtime,
     refresh_rate_limits,
+    list_plugins,
+    get_plugin_details,
+    install_plugin,
+    uninstall_plugin,
+    set_plugin_enabled,
+    complete_plugin_auth,
+    list_skills,
+    get_skill_details,
+    install_skill,
+    set_skill_enabled,
+    create_skill_scaffold,
+    create_plugin_scaffold,
     load_workspace_store,
     save_workspace_store,
     restart_runtime,

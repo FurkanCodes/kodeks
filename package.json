@@ -10,7 +10,7 @@
     "test": "cargo test --workspace",
     "test:rust": "cargo test --workspace",
     "test:protocol": "node scripts/check-protocol-artifacts.mjs",
-    "test:smoke:web": "node --test --experimental-strip-types src/lib/*.test.ts",
+    "test:smoke:web": "node --test --experimental-strip-types src/lib/*.test.ts src/features/catalog/*.test.ts",
     "test:smoke": "npm run test:smoke:web && cargo test --workspace smoke_",
     "test:perf": "cargo test --workspace performance_",
     "test:verify": "npm run test:protocol && cargo test --workspace && npm run build",

@@ -1,5 +1,17 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import type {
+  CreatePluginScaffoldRequest,
+  CreatePluginScaffoldResult,
+  CreateSkillScaffoldRequest,
+  CreateSkillScaffoldResult,
+  InstalledPluginState,
+  PluginCatalogPayload,
+  PluginDetails,
+  SkillCatalogPayload,
+  SkillDetails,
+  SkillRecord,
+} from '../features/catalog/models'
 import type { WorkspaceStore } from './workspaceStore'
 
 export type Snapshot = {
@@ -278,6 +290,62 @@ export async function refreshRuntime() {
 
 export async function refreshRateLimits() {
   return invoke<Snapshot>('refresh_rate_limits')
+}
+
+export async function listPlugins(projectRoot?: string | null, forceRemoteSync?: boolean) {
+  return invoke<PluginCatalogPayload>('list_plugins', { projectRoot, forceRemoteSync })
+}
+
+export async function getPluginDetails(pluginId: string, projectRoot?: string | null) {
+  return invoke<PluginDetails>('get_plugin_details', { pluginId, projectRoot })
+}
+
+export async function installPlugin(pluginId: string, projectRoot?: string | null) {
+  return invoke<InstalledPluginState>('install_plugin', { pluginId, projectRoot })
+}
+
+export async function uninstallPlugin(pluginId: string, projectRoot?: string | null) {
+  return invoke<InstalledPluginState>('uninstall_plugin', { pluginId, projectRoot })
+}
+
+export async function setPluginEnabled(
+  pluginId: string,
+  enabled: boolean,
+  projectRoot?: string | null,
+) {
+  return invoke<InstalledPluginState>('set_plugin_enabled', { pluginId, enabled, projectRoot })
+}
+
+export async function completePluginAuth(pluginId: string, projectRoot?: string | null) {
+  return invoke<InstalledPluginState>('complete_plugin_auth', { pluginId, projectRoot })
+}
+
+export async function listSkills(projectRoot?: string | null) {
+  return invoke<SkillCatalogPayload>('list_skills', { projectRoot })
+}
+
+export async function getSkillDetails(skillId: string, projectRoot?: string | null) {
+  return invoke<SkillDetails>('get_skill_details', { skillId, projectRoot })
+}
+
+export async function installSkill(skillId: string, projectRoot?: string | null) {
+  return invoke<SkillRecord>('install_skill', { skillId, projectRoot })
+}
+
+export async function setSkillEnabled(
+  skillId: string,
+  enabled: boolean,
+  projectRoot?: string | null,
+) {
+  return invoke<SkillRecord>('set_skill_enabled', { skillId, enabled, projectRoot })
+}
+
+export async function createSkillScaffold(request: CreateSkillScaffoldRequest) {
+  return invoke<CreateSkillScaffoldResult>('create_skill_scaffold', { request })
+}
+
+export async function createPluginScaffold(request: CreatePluginScaffoldRequest) {
+  return invoke<CreatePluginScaffoldResult>('create_plugin_scaffold', { request })
 }
 
 export async function loadWorkspaceStore() {

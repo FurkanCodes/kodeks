@@ -24,6 +24,8 @@ import {
 import { LoadingSpinner } from './components/shell/LoadingSpinner'
 import { Sidebar, type SidebarAccount } from './components/shell/Sidebar'
 import { TopBar, type TopBarRunState } from './components/shell/TopBar'
+import { CatalogModal } from './features/catalog/CatalogModal'
+import type { CatalogTab } from './features/catalog/models'
 import {
   archiveThread,
   checkoutGitBranch,
@@ -349,6 +351,8 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSearch, setSettingsSearch] = useState('')
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionKey>('account')
+  const [catalogOpen, setCatalogOpen] = useState(false)
+  const [catalogInitialTab, setCatalogInitialTab] = useState<CatalogTab>('plugins')
   const [panelMode, setPanelMode] = useState<PanelMode>(null)
   const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null)
   const [selectedCodePath, setSelectedCodePath] = useState<string | null>(null)
@@ -1663,6 +1667,12 @@ function App() {
     setSettingsOpen(true)
   }
 
+  function openCatalogView(tab: CatalogTab) {
+    setAccountMenuOpen(false)
+    setCatalogInitialTab(tab)
+    setCatalogOpen(true)
+  }
+
   async function handleRestart() {
     setBusy(true)
     setError(null)
@@ -2215,8 +2225,8 @@ function App() {
             onAddProject={() => void handleAddProject()}
             onNewThread={(rootPath) => void handleNewThread(rootPath)}
             onSearch={() => openSettingsView('account')}
-            onOpenPlugins={() => openSettingsView('features')}
-            onOpenAutomations={() => openSettingsView('features')}
+            onOpenPlugins={() => openCatalogView('plugins')}
+            onOpenAutomations={() => openCatalogView('skills')}
             onSelectProject={handleProjectSelect}
             onSelectThread={(threadId) => void handleThreadSelect(threadId)}
             onArchiveThread={(threadId) => void handleArchiveThread(threadId)}
@@ -2431,6 +2441,29 @@ function App() {
         onClose={() => setSettingsOpen(false)}
         onSearchChange={setSettingsSearch}
         onSectionChange={setActiveSettingsSection}
+      />
+
+      <CatalogModal
+        open={catalogOpen}
+        initialTab={catalogInitialTab}
+        projectRoot={currentProjectRoot}
+        onClose={() => setCatalogOpen(false)}
+        onOpenLocalPath={async (path) => {
+          setError(null)
+          try {
+            await openWorkspaceFile(currentProjectRoot, path)
+          } catch (nextError) {
+            setError(stringifyError(nextError))
+          }
+        }}
+        onOpenExternalUrl={async (url) => {
+          setError(null)
+          try {
+            await openExternalUrl(url)
+          } catch (nextError) {
+            setError(stringifyError(nextError))
+          }
+        }}
       />
     </>
   )

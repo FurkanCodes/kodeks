@@ -289,6 +289,12 @@ impl RuntimeHandle {
             .and_then(expect_models)
     }
 
+    pub async fn request_app_server(&self, method: String, params: Option<Value>) -> Result<Value> {
+        self.send(ControlMessageKind::AppServerRequest { method, params })
+            .await
+            .and_then(expect_json)
+    }
+
     async fn send(&self, kind: ControlMessageKind) -> Result<ControlResponse> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.control_tx
@@ -304,6 +310,7 @@ fn expect_snapshot(response: ControlResponse) -> Result<SessionSnapshot> {
     match response {
         ControlResponse::Snapshot(snapshot) => Ok(snapshot),
         ControlResponse::Models(_) => Err(anyhow!("runtime returned models instead of snapshot")),
+        ControlResponse::Json(_) => Err(anyhow!("runtime returned JSON instead of snapshot")),
     }
 }
 
@@ -311,6 +318,15 @@ fn expect_models(response: ControlResponse) -> Result<Vec<ModelOption>> {
     match response {
         ControlResponse::Models(models) => Ok(models),
         ControlResponse::Snapshot(_) => Err(anyhow!("runtime returned snapshot instead of models")),
+        ControlResponse::Json(_) => Err(anyhow!("runtime returned JSON instead of models")),
+    }
+}
+
+fn expect_json(response: ControlResponse) -> Result<Value> {
+    match response {
+        ControlResponse::Json(value) => Ok(value),
+        ControlResponse::Snapshot(_) => Err(anyhow!("runtime returned snapshot instead of JSON")),
+        ControlResponse::Models(_) => Err(anyhow!("runtime returned models instead of JSON")),
     }
 }
 
@@ -374,11 +390,16 @@ enum ControlMessageKind {
         thread_id: String,
     },
     ListModels,
+    AppServerRequest {
+        method: String,
+        params: Option<Value>,
+    },
 }
 
 enum ControlResponse {
     Snapshot(SessionSnapshot),
     Models(Vec<ModelOption>),
+    Json(Value),
 }
 
 #[derive(Clone)]
@@ -663,6 +684,10 @@ impl Controller {
             ControlMessageKind::ListModels => {
                 let models = self.list_models().await?;
                 Ok(ControlResponse::Models(models))
+            }
+            ControlMessageKind::AppServerRequest { method, params } => {
+                let response = self.app_server()?.request(&method, params).await?;
+                Ok(ControlResponse::Json(response))
             }
         }
     }
