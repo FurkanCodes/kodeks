@@ -1,5 +1,5 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import type { MouseEvent, ReactNode } from 'react'
+import { type MouseEvent, type ReactNode } from 'react'
 import {
   ArchiveIcon,
   ArrowLeftIcon,
@@ -31,6 +31,8 @@ type TopBarProps = {
   codeOpen: boolean
   diagnosticsCount: number
   diagnosticsOpen: boolean
+  commitReady?: boolean
+  onOpenCommit?: () => void
   onToggleSidebar: () => void
   onGoBack: () => void
   onGoForward: () => void
@@ -91,6 +93,28 @@ function HeaderToggle(props: {
       <span className="rounded-[5px] bg-black/20 px-1.25 py-0.5 text-[9.5px] text-neutral-300">
         {props.count}
       </span>
+    </button>
+  )
+}
+
+function HeaderAction(props: {
+  label: string
+  disabled?: boolean
+  onClick?: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      disabled={props.disabled}
+      title={props.label}
+      className={`flex h-7 items-center rounded-full px-2.5 text-[11.5px] font-medium transition ${
+        props.disabled
+          ? 'cursor-not-allowed text-neutral-600'
+          : 'text-neutral-300 hover:bg-white/[0.05] hover:text-white'
+      }`}
+    >
+      <span>{props.label}</span>
     </button>
   )
 }
@@ -241,6 +265,13 @@ export function TopBar(props: TopBarProps) {
       <div className="flex min-w-0 shrink-0 items-center gap-1">
         <RunStatePill state={props.runState} />
         <div className="mx-1 hidden h-3 w-px bg-white/[0.05] lg:block" />
+        {props.onOpenCommit ? (
+          <HeaderAction
+            label="Commit"
+            disabled={!props.commitReady}
+            onClick={props.onOpenCommit}
+          />
+        ) : null}
         <HeaderToggle
           icon={BranchIcon}
           label="Changes"

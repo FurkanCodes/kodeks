@@ -13,6 +13,7 @@ import {
   type ChatMessage,
   type QuickStartSuggestion,
 } from './components/shell/MessageTimeline'
+import { GitCommitDialog } from './components/shell/GitCommitDialog'
 import {
   SettingsModal,
   type SettingsRow,
@@ -24,10 +25,17 @@ import { Sidebar, type SidebarAccount } from './components/shell/Sidebar'
 import { TopBar, type TopBarRunState } from './components/shell/TopBar'
 import {
   archiveThread,
+  checkoutGitBranch,
+  commitGitIndex,
+  createGitBranch,
   cancelLogin,
   type ApprovalEntry,
   disconnectAccount,
+  type GitChangeStatus,
+  type GitDiffTarget,
+  type GitProjectSnapshot,
   getSnapshot,
+  getGitProject,
   interruptTurn,
   listModels,
   loadWorkspaceStore as loadNativeWorkspaceStore,
@@ -43,7 +51,8 @@ import {
   type SavedAccountView,
   type Snapshot,
   readWorkspaceFile,
-  refreshRateLimits,
+  readGitFileDiff,
+  pushGitBranch,
   refreshRuntime,
   resolveApproval,
   savePastedImage,
@@ -53,6 +62,7 @@ import {
   selectAccount,
   selectThread,
   sendPrompt,
+  stageGitPaths,
   type ModelOption,
   startThread,
   steerTurn,
@@ -312,6 +322,19 @@ function App() {
   const [selectedReasoning, setSelectedReasoning] = useState('medium')
   const [selectedPermissionPreset, setSelectedPermissionPreset] = useState<PermissionPreset>('default')
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([])
+  const [projectGit, setProjectGit] = useState<GitProjectSnapshot | null>(null)
+  const [projectGitLoading, setProjectGitLoading] = useState(false)
+  const [projectGitActionBusy, setProjectGitActionBusy] = useState(false)
+  const [selectedProjectGitPath, setSelectedProjectGitPath] = useState<string | null>(null)
+  const [selectedProjectGitDiffTarget, setSelectedProjectGitDiffTarget] = useState<GitDiffTarget>('working')
+  const [projectGitDiff, setProjectGitDiff] = useState('')
+  const [projectGitDiffLoading, setProjectGitDiffLoading] = useState(false)
+  const [gitCommitOpen, setGitCommitOpen] = useState(false)
+  const [gitCommitIncludeUnstaged, setGitCommitIncludeUnstaged] = useState(false)
+  const [gitCommitSubject, setGitCommitSubject] = useState('')
+  const [gitCommitBody, setGitCommitBody] = useState('')
+  const [gitCommitError, setGitCommitError] = useState<string | null>(null)
+  const [gitCommitNextStep, setGitCommitNextStep] = useState<'commit' | 'commit_push'>('commit')
   const [composerAttachments, setComposerAttachments] = useState<ComposerImageAttachment[]>([])
   const [composerEngaged, setComposerEngaged] = useState(false)
   const [composerResetToken, setComposerResetToken] = useState(0)
@@ -369,6 +392,22 @@ function App() {
         mostRecentProjectRoot(workspaceStore) ||
         '.',
     )
+  const gitProjectRoot = useMemo(() => {
+    const explicitRoot =
+      activeProjectViewRoot ||
+      activeThread?.repo ||
+      activeThread?.cwd ||
+      snapshot.session.repo ||
+      snapshot.session.cwd
+
+    return explicitRoot ? normalizeProjectRoot(explicitRoot) : null
+  }, [
+    activeProjectViewRoot,
+    activeThread?.cwd,
+    activeThread?.repo,
+    snapshot.session.cwd,
+    snapshot.session.repo,
+  ])
 
   const activeProjectLabel = useMemo(() => {
     const saved = workspaceStore.projects.find(
@@ -391,6 +430,28 @@ function App() {
     [activeProjectLabel, activeProjectViewRoot, currentProjectRoot],
   )
 
+  const activeBranchLabel =
+    projectGit?.branch.current ||
+    (projectGit?.branch.detached ? projectGit?.branch.head_sha?.slice(0, 7) || 'Detached' : null) ||
+    activeThread?.branch ||
+    snapshot.session.branch ||
+    null
+
+  const composerGitSummary = useMemo(
+    () => summarizeGitCommitScope(projectGit, true),
+    [projectGit],
+  )
+  const gitCommitScopeSummary = useMemo(
+    () => summarizeGitCommitScope(projectGit, gitCommitIncludeUnstaged),
+    [gitCommitIncludeUnstaged, projectGit],
+  )
+  const autoGitCommitMessage = useMemo(
+    () => buildAutomaticGitCommitMessage(projectGit, gitCommitIncludeUnstaged),
+    [gitCommitIncludeUnstaged, projectGit],
+  )
+  const gitThreadBranchContext = activeThread?.branch || snapshot.session.branch || null
+  const gitCanPush = Boolean(projectGit?.branch.current && !projectGit.branch.detached && projectGit.branch.ahead > 0)
+
   const threadViewKey = useMemo(() => {
     if (activeProjectViewRoot) {
       return `project:${activeProjectViewRoot}`
@@ -404,30 +465,58 @@ function App() {
     [activeProjectViewRoot, snapshot.approvals],
   )
 
-  const parsedDiffFiles = useMemo(
-    () => prepareDiffFiles(parseUnifiedDiff(activeProjectViewRoot ? undefined : snapshot.active_diff?.diff)),
-    [activeProjectViewRoot, snapshot.active_diff?.diff],
+  const threadParsedDiffFiles = useMemo(
+    () => prepareDiffFiles(parseUnifiedDiff(snapshot.active_diff?.diff)),
+    [snapshot.active_diff?.diff],
   )
 
-  const visibleDiffFiles = useMemo(
-    () => parsedDiffFiles.filter((file) => showHiddenDiffFiles || !file.hiddenByDefault),
-    [parsedDiffFiles, showHiddenDiffFiles],
+  const projectParsedDiffFiles = useMemo(
+    () => prepareDiffFiles(parseUnifiedDiff(projectGitDiff)),
+    [projectGitDiff],
+  )
+
+  const projectInspectorDiffFiles = useMemo(
+    () => (projectGit?.files || []).map(gitChangeEntryToDiffFileView),
+    [projectGit?.files],
+  )
+
+  const threadVisibleDiffFiles = useMemo(
+    () => threadParsedDiffFiles.filter((file) => showHiddenDiffFiles || !file.hiddenByDefault),
+    [showHiddenDiffFiles, threadParsedDiffFiles],
   )
 
   const hiddenDiffFilesCount = useMemo(
-    () => parsedDiffFiles.filter((file) => file.hiddenByDefault).length,
-    [parsedDiffFiles],
+    () => (activeProjectViewRoot ? 0 : threadParsedDiffFiles.filter((file) => file.hiddenByDefault).length),
+    [activeProjectViewRoot, threadParsedDiffFiles],
+  )
+
+  const selectedThreadDiffFile = useMemo(
+    () => threadVisibleDiffFiles.find((file) => file.path === selectedDiffPath) ?? null,
+    [selectedDiffPath, threadVisibleDiffFiles],
   )
 
   const selectedDiffFile = useMemo(
-    () => visibleDiffFiles.find((file) => file.path === selectedDiffPath) ?? null,
-    [selectedDiffPath, visibleDiffFiles],
+    () => (activeProjectViewRoot ? projectParsedDiffFiles[0] ?? null : selectedThreadDiffFile),
+    [activeProjectViewRoot, projectParsedDiffFiles, selectedThreadDiffFile],
   )
 
   const selectedDiffLines = useMemo<DiffLineView[]>(() => buildDiffLines(selectedDiffFile), [selectedDiffFile])
   const selectedBreadcrumbs = useMemo(
-    () => (selectedDiffFile ? selectedDiffFile.path.split('/').filter(Boolean) : []),
-    [selectedDiffFile],
+    () =>
+      (activeProjectViewRoot ? selectedProjectGitPath : selectedDiffFile?.path)?.split('/').filter(Boolean) ?? [],
+    [activeProjectViewRoot, selectedDiffFile?.path, selectedProjectGitPath],
+  )
+  const inspectorDiffFiles = useMemo<DiffFileView[]>(
+    () =>
+      activeProjectViewRoot
+        ? projectInspectorDiffFiles
+        : threadVisibleDiffFiles.map<DiffFileView>((file) => ({
+            path: file.path,
+            additions: file.additions,
+            deletions: file.deletions,
+            status: diffStatusToBadge(file.status),
+          })),
+    [activeProjectViewRoot, projectInspectorDiffFiles, threadVisibleDiffFiles],
   )
   const codeBreadcrumbs = useMemo(
     () => (selectedCodePath ? selectedCodePath.split('/').filter(Boolean) : []),
@@ -562,15 +651,16 @@ function App() {
 
   const runState: TopBarRunState = activeTurnId
     ? 'running'
-    : shellMessagesValue.length > 0 || Boolean(!activeProjectViewRoot && snapshot.active_diff?.diff)
+    : shellMessagesValue.length > 0 ||
+        Boolean((activeProjectViewRoot ? projectGit?.counts.total : snapshot.active_diff?.diff))
       ? 'done'
       : 'idle'
 
-  const changesCount = parsedDiffFiles.length
+  const changesCount = activeProjectViewRoot ? projectGit?.counts.total || 0 : threadParsedDiffFiles.length
   const diagnosticsWarnings = activeProjectViewRoot ? [] : snapshot.diagnostics.warnings
   const diagnosticsTraces = activeProjectViewRoot ? [] : snapshot.diagnostics.traces
   const diagnosticsCount = diagnosticsWarnings.length + diagnosticsTraces.length
-  const codeReady = Boolean(selectedCodePath || selectedDiffFile)
+  const codeReady = Boolean(selectedCodePath || selectedDiffFile || (activeProjectViewRoot && selectedProjectGitPath))
 
   const settingsSections = useMemo(
     () =>
@@ -760,11 +850,14 @@ function App() {
   }, [changesCount, panelMode])
 
   useEffect(() => {
-    if (selectedDiffPath && visibleDiffFiles.some((file) => file.path === selectedDiffPath)) {
+    if (activeProjectViewRoot) {
       return
     }
-    setSelectedDiffPath(visibleDiffFiles[0]?.path ?? null)
-  }, [selectedDiffPath, visibleDiffFiles])
+    if (selectedDiffPath && threadVisibleDiffFiles.some((file) => file.path === selectedDiffPath)) {
+      return
+    }
+    setSelectedDiffPath(threadVisibleDiffFiles[0]?.path ?? null)
+  }, [activeProjectViewRoot, selectedDiffPath, threadVisibleDiffFiles])
 
   useEffect(() => {
     if (activeTurnId) {
@@ -947,6 +1040,127 @@ function App() {
       cancelled = true
     }
   }, [currentProjectRoot, hasUsableAccounts])
+
+  useEffect(() => {
+    if (!gitProjectRoot) {
+      setProjectGit(null)
+      setProjectGitLoading(false)
+      setSelectedProjectGitPath(null)
+      setProjectGitDiff('')
+      return
+    }
+
+    let cancelled = false
+    const root = gitProjectRoot
+    setProjectGitLoading(true)
+
+    async function loadProjectGit() {
+      try {
+        const next = await getGitProject(root)
+        if (cancelled) {
+          return
+        }
+        setProjectGit(next)
+        if (!next) {
+          setSelectedProjectGitPath(null)
+          setProjectGitDiff('')
+        }
+      } catch (nextError) {
+        if (!cancelled) {
+          setProjectGit(null)
+          const message = stringifyError(nextError)
+          setError(message)
+        }
+      } finally {
+        if (!cancelled) {
+          setProjectGitLoading(false)
+        }
+      }
+    }
+
+    void loadProjectGit()
+    return () => {
+      cancelled = true
+    }
+  }, [gitProjectRoot])
+
+  useEffect(() => {
+    setGitCommitOpen(false)
+    setGitCommitIncludeUnstaged(false)
+    setGitCommitSubject('')
+    setGitCommitBody('')
+    setGitCommitError(null)
+  }, [gitProjectRoot])
+
+  useEffect(() => {
+    if (!activeProjectViewRoot || !projectGit) {
+      return
+    }
+
+    const selected = projectGit.files.find((entry) => entry.path === selectedProjectGitPath)
+    if (!selected) {
+      const fallback = projectGit.files[0] || null
+      setSelectedProjectGitPath(fallback?.path ?? null)
+      setSelectedProjectGitDiffTarget(defaultGitDiffTarget(fallback))
+      return
+    }
+
+    const nextTarget =
+      selectedProjectGitDiffTarget === 'staged' && !selected.staged_status
+        ? defaultGitDiffTarget(selected)
+        : selectedProjectGitDiffTarget === 'working' && !selected.unstaged_status && !selected.untracked
+          ? defaultGitDiffTarget(selected)
+          : selectedProjectGitDiffTarget
+
+    if (nextTarget !== selectedProjectGitDiffTarget) {
+      setSelectedProjectGitDiffTarget(nextTarget)
+    }
+  }, [activeProjectViewRoot, projectGit, selectedProjectGitDiffTarget, selectedProjectGitPath])
+
+  useEffect(() => {
+    if (!activeProjectViewRoot || !projectGit || !selectedProjectGitPath) {
+      setProjectGitDiff('')
+      setProjectGitDiffLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const selectedPath = selectedProjectGitPath
+    setProjectGitDiffLoading(true)
+
+    async function loadProjectDiff() {
+      try {
+        const diff = await readGitFileDiff(
+          currentProjectRoot,
+          selectedPath,
+          selectedProjectGitDiffTarget,
+        )
+        if (!cancelled) {
+          setProjectGitDiff(diff)
+        }
+      } catch (nextError) {
+        if (!cancelled) {
+          setProjectGitDiff('')
+          setError(stringifyError(nextError))
+        }
+      } finally {
+        if (!cancelled) {
+          setProjectGitDiffLoading(false)
+        }
+      }
+    }
+
+    void loadProjectDiff()
+    return () => {
+      cancelled = true
+    }
+  }, [
+    activeProjectViewRoot,
+    currentProjectRoot,
+    projectGit,
+    selectedProjectGitDiffTarget,
+    selectedProjectGitPath,
+  ])
 
   useEffect(() => {
     if (!selectedCodePath || !currentProjectRoot) {
@@ -1441,6 +1655,149 @@ function App() {
     }
   }
 
+  function applyProjectGitMutation(result: { snapshot: GitProjectSnapshot; summary: string }) {
+    setProjectGit(result.snapshot)
+  }
+
+  function handleSelectProjectGitPath(path: string, target: GitDiffTarget) {
+    setSelectedProjectGitPath(path)
+    setSelectedProjectGitDiffTarget(target)
+    setPanelMode('changes')
+  }
+
+  async function handleCreateProjectGitBranch(branchName: string) {
+    setProjectGitActionBusy(true)
+    setError(null)
+    try {
+      applyProjectGitMutation(await createGitBranch(currentProjectRoot, branchName, true))
+    } catch (nextError) {
+      setError(stringifyError(nextError))
+    } finally {
+      setProjectGitActionBusy(false)
+    }
+  }
+
+  async function handleCheckoutProjectGitBranch(branchName: string) {
+    setProjectGitActionBusy(true)
+    setError(null)
+    try {
+      applyProjectGitMutation(await checkoutGitBranch(currentProjectRoot, branchName))
+    } catch (nextError) {
+      setError(stringifyError(nextError))
+    } finally {
+      setProjectGitActionBusy(false)
+    }
+  }
+
+  function handleOpenGitCommitDialog() {
+    if (!projectGit) {
+      return
+    }
+
+    setGitCommitError(null)
+    setGitCommitSubject('')
+    setGitCommitBody('')
+    setGitCommitIncludeUnstaged(
+      projectGit.counts.staged === 0 && (projectGit.counts.working > 0 || projectGit.counts.untracked > 0),
+    )
+    setGitCommitNextStep(projectGit.counts.total === 0 && projectGit.branch.ahead > 0 ? 'commit_push' : 'commit')
+    setGitCommitOpen(true)
+  }
+
+  async function handleCommitProjectGitIndex(
+    subject: string,
+    body: string,
+    includeUnstaged: boolean,
+    options?: { closeOnSuccess?: boolean },
+  ) {
+    const autoMessage = buildAutomaticGitCommitMessage(projectGit, includeUnstaged)
+    const trimmedSubject = subject.trim() || autoMessage.subject
+    const trimmedBody = body.trim()
+
+    setProjectGitActionBusy(true)
+    setError(null)
+    setGitCommitError(null)
+    try {
+      if (includeUnstaged && projectGit) {
+        const unstagedPaths = projectGit.files
+          .filter((entry) => entry.unstaged_status || entry.untracked)
+          .map((entry) => entry.path)
+
+        if (unstagedPaths.length > 0) {
+          applyProjectGitMutation(await stageGitPaths(currentProjectRoot, unstagedPaths))
+        }
+      }
+
+      applyProjectGitMutation(
+        await commitGitIndex(currentProjectRoot, {
+          subject: trimmedSubject,
+          body: trimmedBody || autoMessage.body || undefined,
+          amend: false,
+        }),
+      )
+      if (options?.closeOnSuccess !== false) {
+        setGitCommitOpen(false)
+        setGitCommitIncludeUnstaged(false)
+        setGitCommitSubject('')
+        setGitCommitBody('')
+      }
+      return true
+    } catch (nextError) {
+      const message = stringifyError(nextError)
+      setGitCommitError(message)
+      setError(message)
+      return false
+    } finally {
+      setProjectGitActionBusy(false)
+    }
+  }
+
+  async function handlePushProjectGitBranch() {
+    setProjectGitActionBusy(true)
+    setError(null)
+    setGitCommitError(null)
+    try {
+      applyProjectGitMutation(await pushGitBranch(currentProjectRoot))
+      setGitCommitOpen(false)
+      setGitCommitIncludeUnstaged(false)
+      setGitCommitSubject('')
+      setGitCommitBody('')
+      setGitCommitNextStep('commit')
+      return true
+    } catch (nextError) {
+      const message = stringifyError(nextError)
+      setGitCommitError(message)
+      setError(message)
+      return false
+    } finally {
+      setProjectGitActionBusy(false)
+    }
+  }
+
+  async function handleSubmitGitCommitFlow() {
+    if (gitCommitNextStep === 'commit_push') {
+      const hasChanges = gitCommitScopeSummary.fileCount > 0
+      if (hasChanges) {
+        const committed = await handleCommitProjectGitIndex(
+          gitCommitSubject,
+          gitCommitBody,
+          gitCommitIncludeUnstaged,
+          { closeOnSuccess: false },
+        )
+        if (!committed) {
+          return
+        }
+      }
+
+      if (projectGit?.branch.ahead || hasChanges) {
+        await handlePushProjectGitBranch()
+      }
+      return
+    }
+
+    await handleCommitProjectGitIndex(gitCommitSubject, gitCommitBody, gitCommitIncludeUnstaged)
+  }
+
   async function handleApproval(approval: ApprovalEntry, decision: string) {
     setBusy(true)
     setError(null)
@@ -1454,7 +1811,7 @@ function App() {
   }
 
   async function handleOpenExternalFile(path?: string | null) {
-    const target = path || selectedCodePath || selectedDiffFile?.path
+    const target = path || selectedCodePath || (activeProjectViewRoot ? selectedProjectGitPath : selectedDiffFile?.path)
     if (!target) {
       return
     }
@@ -1473,6 +1830,10 @@ function App() {
   }
 
   function handleOpenDiffPath(path: string) {
+    if (activeProjectViewRoot) {
+      handleSelectProjectGitPath(path, selectedProjectGitDiffTarget)
+      return
+    }
     setSelectedDiffPath(path)
     setPanelMode('changes')
   }
@@ -1481,14 +1842,24 @@ function App() {
     if (changesCount === 0) {
       return
     }
+    if (activeProjectViewRoot && !selectedProjectGitPath) {
+      const fallback = projectGit?.files[0]
+      if (fallback) {
+        setSelectedProjectGitPath(fallback.path)
+        setSelectedProjectGitDiffTarget(defaultGitDiffTarget(fallback))
+      }
+    }
     setPanelMode((current) => (current === 'changes' ? null : 'changes'))
   }
 
   function handleToggleCode() {
+    if (!selectedCodePath && activeProjectViewRoot && selectedProjectGitPath) {
+      setSelectedCodePath(selectedProjectGitPath)
+    }
     if (!selectedCodePath && selectedDiffFile) {
       setSelectedCodePath(selectedDiffFile.path)
     }
-    if (!selectedCodePath && !selectedDiffFile) {
+    if (!selectedCodePath && !selectedDiffFile && !(activeProjectViewRoot && selectedProjectGitPath)) {
       return
     }
     setPanelMode((current) => (current === 'code' ? null : 'code'))
@@ -1564,18 +1935,9 @@ function App() {
     }
   }
 
-  async function handleOpenRateLimits() {
-    setBusy(true)
-    setError(null)
-    try {
-      setSnapshot(await refreshRateLimits())
-    } catch (nextError) {
-      setError(stringifyError(nextError))
-    } finally {
-      setBusy(false)
-      setActiveSettingsSection('account')
-      setSettingsOpen(true)
-    }
+  function handleOpenRateLimits() {
+    setActiveSettingsSection('account')
+    setSettingsOpen(true)
   }
 
   async function handleOpenSignInLink(url?: string | null) {
@@ -1717,6 +2079,8 @@ function App() {
           codeOpen={effectivePanelMode === 'code'}
           diagnosticsCount={diagnosticsCount}
           diagnosticsOpen={effectivePanelMode === 'diagnostics'}
+          commitReady={Boolean(projectGit && (composerGitSummary.fileCount > 0 || gitCanPush))}
+          onOpenCommit={projectGit ? handleOpenGitCommitDialog : undefined}
           onToggleSidebar={handleToggleSidebar}
           onGoBack={() => void handleHistoryNavigation(-1)}
           onGoForward={() => void handleHistoryNavigation(1)}
@@ -1830,6 +2194,10 @@ function App() {
                 rateLimitDisplays={composerRateLimitDisplays}
                 showRateLimitsInline={workspaceStore.ui.showComposerRateLimits}
                 busy={busy}
+                gitBranchLabel={projectGit ? activeBranchLabel : null}
+                gitBranches={projectGit?.branches ?? null}
+                gitSummary={composerGitSummary}
+                gitBusy={projectGitLoading || projectGitActionBusy}
                 compactModelMenu={compactModelMenu}
                 touchModelPreview={touchModelPreview}
                 onOpenProjectPicker={() => void handleAddProject()}
@@ -1842,6 +2210,8 @@ function App() {
                 onSelectReasoning={handleReasoningChange}
                 onSelectPermissionPreset={(value) => void handlePermissionPresetChange(value)}
                 onOpenRateLimits={handleOpenRateLimits}
+                onCheckoutGitBranch={(branchName) => void handleCheckoutProjectGitBranch(branchName)}
+                onCreateGitBranch={(branchName) => void handleCreateProjectGitBranch(branchName)}
               />
             </div>
 
@@ -1856,18 +2226,17 @@ function App() {
                 diagnosticsCount,
                 selectedCodePath,
               )}
-              diffFiles={visibleDiffFiles.map<DiffFileView>((file) => ({
-                path: file.path,
-                additions: file.additions,
-                deletions: file.deletions,
-                status: diffStatusToBadge(file.status),
-              }))}
+              diffFiles={inspectorDiffFiles}
               hiddenDiffFilesCount={hiddenDiffFilesCount}
               hiddenFilesVisible={showHiddenDiffFiles}
-              selectedPath={selectedDiffFile?.path ?? null}
+              selectedPath={activeProjectViewRoot ? selectedProjectGitPath : selectedDiffFile?.path ?? null}
               selectedBreadcrumbs={selectedBreadcrumbs}
-              diffHeader={buildDiffHeader(selectedDiffFile)}
-              diffLines={selectedDiffLines}
+              diffHeader={
+                projectGitDiffLoading && activeProjectViewRoot
+                  ? 'Loading diff...'
+                  : buildDiffHeader(selectedDiffFile)
+              }
+              diffLines={projectGitDiffLoading && activeProjectViewRoot ? [] : selectedDiffLines}
               codePath={selectedCodePath}
               codeBreadcrumbs={codeBreadcrumbs}
               codeContent={selectedCodeContent}
@@ -1876,12 +2245,23 @@ function App() {
               warnings={diagnosticsWarnings}
               traces={diagnosticsTraces}
               onClose={handleClosePanel}
-              onSelectFile={setSelectedDiffPath}
+              onSelectFile={(path) => {
+                if (activeProjectViewRoot) {
+                  const entry = projectGit?.files.find((file) => file.path === path)
+                  handleSelectProjectGitPath(path, defaultGitDiffTarget(entry || null))
+                  return
+                }
+                setSelectedDiffPath(path)
+              }}
               onToggleHiddenFiles={() => setShowHiddenDiffFiles((value) => !value)}
               onJumpToContext={handleJumpToContext}
               onViewCode={() => selectedDiffFile && handleOpenCodePath(selectedDiffFile.path)}
               onShowChanges={() => {
-                if (selectedCodePath) {
+                if (activeProjectViewRoot && selectedCodePath) {
+                  setSelectedProjectGitPath(selectedCodePath)
+                  const entry = projectGit?.files.find((file) => file.path === selectedCodePath)
+                  setSelectedProjectGitDiffTarget(defaultGitDiffTarget(entry || null))
+                } else if (selectedCodePath) {
                   setSelectedDiffPath(selectedCodePath)
                 }
                 setPanelMode('changes')
@@ -1893,6 +2273,34 @@ function App() {
           </div>
         </div>
       </div>
+
+      <GitCommitDialog
+        open={gitCommitOpen}
+        busy={projectGitActionBusy}
+        branchLabel={activeBranchLabel || 'Detached'}
+        fileCount={gitCommitScopeSummary.fileCount}
+        additions={gitCommitScopeSummary.additions}
+        deletions={gitCommitScopeSummary.deletions}
+        aheadCount={projectGit?.branch.ahead || 0}
+        includeUnstaged={gitCommitIncludeUnstaged}
+        subject={gitCommitSubject}
+        body={gitCommitBody}
+        autoSubject={autoGitCommitMessage.subject}
+        autoBody={autoGitCommitMessage.body}
+        nextStep={gitCommitNextStep}
+        threadBranchLabel={
+          gitThreadBranchContext && gitThreadBranchContext !== (activeBranchLabel || null)
+            ? gitThreadBranchContext
+            : null
+        }
+        error={gitCommitError}
+        onClose={() => setGitCommitOpen(false)}
+        onToggleIncludeUnstaged={setGitCommitIncludeUnstaged}
+        onSubjectChange={setGitCommitSubject}
+        onBodyChange={setGitCommitBody}
+        onNextStepChange={setGitCommitNextStep}
+        onSubmit={() => void handleSubmitGitCommitFlow()}
+      />
 
       <SettingsModal
         open={settingsOpen}
@@ -2828,6 +3236,157 @@ function diffStatusToBadge(status: ParsedDiffFile['status']): DiffFileView['stat
     return 'D'
   }
   return 'M'
+}
+
+function defaultGitDiffTarget(
+  entry:
+    | GitProjectSnapshot['files'][number]
+    | null
+    | undefined,
+): GitDiffTarget {
+  if (!entry) {
+    return 'working'
+  }
+  return entry.unstaged_status || entry.untracked ? 'working' : 'staged'
+}
+
+function gitStatusToBadge(status?: GitChangeStatus | null, untracked?: boolean): DiffFileView['status'] {
+  if (untracked || status === 'added') {
+    return 'A'
+  }
+  if (status === 'deleted') {
+    return 'D'
+  }
+  return 'M'
+}
+
+function gitChangeEntryToDiffFileView(
+  entry: GitProjectSnapshot['files'][number],
+): DiffFileView {
+  return {
+    path: entry.path,
+    additions: entry.additions,
+    deletions: entry.deletions,
+    status: gitStatusToBadge(entry.unstaged_status || entry.staged_status, entry.untracked),
+  }
+}
+
+function summarizeGitCommitScope(
+  git: GitProjectSnapshot | null,
+  includeUnstaged: boolean,
+) {
+  if (!git) {
+    return { fileCount: 0, additions: 0, deletions: 0 }
+  }
+
+  return git.files.reduce(
+    (summary, entry) => {
+      const include =
+        Boolean(entry.staged_status) || (includeUnstaged && Boolean(entry.unstaged_status || entry.untracked))
+
+      if (!include) {
+        return summary
+      }
+
+      summary.fileCount += 1
+      summary.additions += entry.additions
+      summary.deletions += entry.deletions
+      return summary
+    },
+    { fileCount: 0, additions: 0, deletions: 0 },
+  )
+}
+
+function buildAutomaticGitCommitMessage(
+  git: GitProjectSnapshot | null,
+  includeUnstaged: boolean,
+) {
+  const entries = (git?.files ?? []).filter(
+    (entry) => entry.staged_status || (includeUnstaged && (entry.unstaged_status || entry.untracked)),
+  )
+
+  if (entries.length === 0) {
+    return {
+      subject: 'Update workspace',
+      body: '',
+    }
+  }
+
+  const paths = entries.map((entry) => entry.path)
+  const hasUi = paths.some((path) => path.startsWith('src/'))
+  const hasRust = paths.some((path) => path.startsWith('src-tauri/') || path.startsWith('crates/'))
+  const hasGitFiles = paths.some((path) => /git|branch|commit/i.test(path))
+
+  let subject = ''
+  if (hasUi && hasRust && hasGitFiles) {
+    subject = 'Refine Git workflow'
+  } else if (hasUi && hasGitFiles) {
+    subject = 'Polish Git controls'
+  } else if (hasRust && hasGitFiles) {
+    subject = 'Update Git backend'
+  } else if (entries.length === 1) {
+    const entry = entries[0]
+    subject = `${gitChangeVerb(entry)} ${humanizeCommitPath(entry.path)}`
+  } else {
+    const scope = deriveCommitScope(paths)
+    subject = scope ? `Update ${scope}` : `Update ${entries.length} files`
+  }
+
+  const previewLines = entries.slice(0, 3).map((entry) => `- ${gitChangeVerb(entry)} ${entry.path}`)
+  if (entries.length > 3) {
+    previewLines.push(`- plus ${entries.length - 3} more files`)
+  }
+
+  return {
+    subject,
+    body: previewLines.join('\n'),
+  }
+}
+
+function gitChangeVerb(entry: GitProjectSnapshot['files'][number]) {
+  const status = entry.staged_status || entry.unstaged_status
+  if (entry.untracked || status === 'added') {
+    return 'Add'
+  }
+  if (status === 'deleted') {
+    return 'Remove'
+  }
+  if (status === 'renamed') {
+    return 'Rename'
+  }
+  return 'Update'
+}
+
+function humanizeCommitPath(path: string) {
+  const tail = tailPath(path).replace(/\.[^.]+$/, '')
+  return tail || path
+}
+
+function deriveCommitScope(paths: string[]) {
+  const normalized = paths
+    .map((path) => path.split('/').filter(Boolean))
+    .filter((parts) => parts.length > 0)
+
+  if (normalized.length === 0) {
+    return ''
+  }
+
+  let depth = 0
+  while (true) {
+    const segment = normalized[0]?.[depth]
+    if (!segment) {
+      break
+    }
+
+    if (normalized.every((parts) => parts[depth] === segment)) {
+      depth += 1
+      continue
+    }
+    break
+  }
+
+  const common = normalized[0]?.slice(0, Math.min(depth, 3)).join(' ')
+  return common || ''
 }
 
 function buildBadgeLabel(

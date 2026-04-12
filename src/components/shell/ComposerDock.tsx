@@ -3,6 +3,7 @@ import type { ModelOption } from '../../lib/kodeks'
 import { extractReferenceQuery, resolveWorkspaceReference } from '../../lib/shellState'
 import {
   ArrowUpIcon,
+  BranchIcon,
   ChevronIcon,
   CloseIcon,
   CloudOffIcon,
@@ -11,6 +12,7 @@ import {
   MonitorIcon,
   PaperclipIcon,
   PlusIcon,
+  SearchIcon,
   ShieldAlertIcon,
   ShieldIcon,
   SparkleIcon,
@@ -28,6 +30,18 @@ export type ComposerAttachment = {
   path: string
   previewUrl: string
   name: string
+}
+
+type ComposerGitBranch = {
+  name: string
+  is_current: boolean
+  is_default: boolean
+}
+
+type ComposerGitSummary = {
+  fileCount: number
+  additions: number
+  deletions: number
 }
 
 type ComposerDockProps = {
@@ -52,6 +66,10 @@ type ComposerDockProps = {
   }> | null
   showRateLimitsInline: boolean
   busy: boolean
+  gitBranchLabel?: string | null
+  gitBranches?: ComposerGitBranch[] | null
+  gitSummary?: ComposerGitSummary | null
+  gitBusy?: boolean
   compactModelMenu?: boolean
   touchModelPreview?: boolean
   onOpenProjectPicker: () => void
@@ -64,6 +82,8 @@ type ComposerDockProps = {
   onSelectReasoning: (reasoning: string) => void
   onSelectPermissionPreset: (preset: string) => void
   onOpenRateLimits: () => void
+  onCheckoutGitBranch?: (branchName: string) => void
+  onCreateGitBranch?: (branchName: string) => void
 }
 
 export function ComposerDock(props: ComposerDockProps) {
@@ -73,7 +93,9 @@ export function ComposerDock(props: ComposerDockProps) {
   const [showPermissionMenu, setShowPermissionMenu] = useState(false)
   const [showModelMenu, setShowModelMenu] = useState(false)
   const [showReasoningMenu, setShowReasoningMenu] = useState(false)
+  const [showGitBranchMenu, setShowGitBranchMenu] = useState(false)
   const [activeModelIndex, setActiveModelIndex] = useState<number | null>(null)
+  const [gitBranchQuery, setGitBranchQuery] = useState('')
   const deferredPrompt = useDeferredValue(draftPrompt)
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -81,6 +103,7 @@ export function ComposerDock(props: ComposerDockProps) {
   const permissionRef = useRef<HTMLDivElement | null>(null)
   const modelRef = useRef<HTMLDivElement | null>(null)
   const reasoningRef = useRef<HTMLDivElement | null>(null)
+  const gitBranchRef = useRef<HTMLDivElement | null>(null)
   const modelButtonRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   const selectedModelOption = useMemo(
@@ -127,6 +150,24 @@ export function ComposerDock(props: ComposerDockProps) {
   }, [deferredPrompt, props.workspaceFiles])
   const isComposing = draftPrompt.trim().length > 0 || props.attachments.length > 0
   const canSubmit = props.authenticated && (draftPrompt.trim().length > 0 || props.attachments.length > 0)
+  const filteredGitBranches = useMemo(() => {
+    const branches = props.gitBranches ?? []
+    const query = gitBranchQuery.trim().toLowerCase()
+
+    if (!query) {
+      return branches
+    }
+
+    return branches.filter((branch) => branch.name.toLowerCase().includes(query))
+  }, [gitBranchQuery, props.gitBranches])
+  const canCreateGitBranch = useMemo(() => {
+    const query = gitBranchQuery.trim()
+    if (!query) {
+      return false
+    }
+
+    return !(props.gitBranches ?? []).some((branch) => branch.name === query)
+  }, [gitBranchQuery, props.gitBranches])
 
   useEffect(() => {
     setDraftPrompt('')
@@ -175,6 +216,7 @@ export function ComposerDock(props: ComposerDockProps) {
       setShowPermissionMenu(false)
       closeModelMenu()
       setShowReasoningMenu(false)
+      setShowGitBranchMenu(false)
     }
 
     const handleDocumentClick = (event: MouseEvent) => {
@@ -193,6 +235,10 @@ export function ComposerDock(props: ComposerDockProps) {
       if (reasoningRef.current && !reasoningRef.current.contains(event.target as Node)) {
         setShowReasoningMenu(false)
       }
+
+      if (gitBranchRef.current && !gitBranchRef.current.contains(event.target as Node)) {
+        setShowGitBranchMenu(false)
+      }
     }
 
     const handleFocusIn = (event: FocusEvent) => {
@@ -210,6 +256,10 @@ export function ComposerDock(props: ComposerDockProps) {
 
       if (reasoningRef.current && !reasoningRef.current.contains(event.target as Node)) {
         setShowReasoningMenu(false)
+      }
+
+      if (gitBranchRef.current && !gitBranchRef.current.contains(event.target as Node)) {
+        setShowGitBranchMenu(false)
       }
     }
 
@@ -279,6 +329,33 @@ export function ComposerDock(props: ComposerDockProps) {
       current.replace(new RegExp(`${escapeRegExp(query)}$`), `@${reference} `),
     )
     textareaRef.current?.focus()
+  }
+
+  function closeAuxMenus() {
+    setShowContinueMenu(false)
+    setShowPermissionMenu(false)
+    setShowModelMenu(false)
+    setShowReasoningMenu(false)
+  }
+
+  async function handleCreateGitBranch() {
+    const branchName = gitBranchQuery.trim()
+    if (!branchName || !props.onCreateGitBranch || !canCreateGitBranch) {
+      return
+    }
+
+    await props.onCreateGitBranch(branchName)
+    setGitBranchQuery('')
+    setShowGitBranchMenu(false)
+  }
+
+  async function handleCheckoutGitBranch(branchName: string) {
+    if (!props.onCheckoutGitBranch) {
+      return
+    }
+
+    await props.onCheckoutGitBranch(branchName)
+    setShowGitBranchMenu(false)
   }
 
   return (
@@ -414,6 +491,7 @@ export function ComposerDock(props: ComposerDockProps) {
                     setShowContinueMenu(false)
                     setShowPermissionMenu(false)
                     setShowReasoningMenu(false)
+                    setShowGitBranchMenu(false)
                   }}
                   className={`flex items-center gap-1.25 rounded-full px-1.75 py-1 text-[12.5px] font-medium transition-colors ${
                     showModelMenu
@@ -511,6 +589,7 @@ export function ComposerDock(props: ComposerDockProps) {
                     setShowContinueMenu(false)
                     setShowPermissionMenu(false)
                     setShowModelMenu(false)
+                    setShowGitBranchMenu(false)
                   }}
                   className={`flex items-center gap-1.25 rounded-full px-1.75 py-1 text-[12.5px] font-medium transition-colors ${
                     props.selectedReasoning !== (selectedModelOption?.default_reasoning_effort || 'medium')
@@ -594,6 +673,7 @@ export function ComposerDock(props: ComposerDockProps) {
                 setShowPermissionMenu(false)
                 setShowModelMenu(false)
                 setShowReasoningMenu(false)
+                setShowGitBranchMenu(false)
               }}
               className="flex items-center gap-1.5 text-[12.5px] font-medium text-neutral-300 transition-colors hover:text-white"
             >
@@ -657,6 +737,95 @@ export function ComposerDock(props: ComposerDockProps) {
             ) : null}
           </div>
 
+          {props.gitBranchLabel ? (
+            <div className="relative" ref={gitBranchRef}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGitBranchMenu((value) => !value)
+                  closeAuxMenus()
+                }}
+                disabled={props.gitBusy}
+                className="flex items-center gap-1.5 text-[12.5px] font-medium text-neutral-300 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <BranchIcon className="h-3.5 w-3.5 text-neutral-400" />
+                <span className="max-w-[13rem] truncate">{props.gitBranchLabel}</span>
+                <ChevronIcon className="h-3.25 w-3.25 opacity-60" />
+              </button>
+
+              {showGitBranchMenu ? (
+                <div className="absolute bottom-full left-0 z-50 mb-2 w-[19rem] rounded-[18px] border border-white/6 bg-[#1a1a1d] p-3 shadow-[0_24px_80px_rgba(0,0,0,0.46)]">
+                  <div className="relative">
+                    <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-500" />
+                    <input
+                      value={gitBranchQuery}
+                      onChange={(event) => setGitBranchQuery(event.target.value)}
+                      placeholder="Search branches"
+                      className="w-full rounded-[12px] border border-white/7 bg-black/20 py-2 pl-9 pr-3 text-[13px] text-neutral-100 placeholder:text-neutral-600 focus:border-white/12 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="mt-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                    Branches
+                  </div>
+
+                  <div className="mt-2 max-h-[15rem] space-y-1 overflow-y-auto shell-scroll">
+                    {filteredGitBranches.length > 0 ? (
+                      filteredGitBranches.map((branch) => (
+                        <button
+                          key={branch.name}
+                          type="button"
+                          disabled={props.gitBusy || branch.is_current}
+                          onClick={() => void handleCheckoutGitBranch(branch.name)}
+                          className={`w-full rounded-[12px] px-3 py-2.5 text-left transition ${
+                            branch.is_current
+                              ? 'bg-white/[0.07] text-white'
+                              : 'text-neutral-300 hover:bg-white/[0.05] hover:text-white'
+                          } ${props.gitBusy ? 'cursor-not-allowed opacity-60' : ''}`}
+                        >
+                          <div className="flex items-center justify-between gap-3 text-[13px] font-medium">
+                            <span className="truncate">{branch.name}</span>
+                            <span className="text-[16px] leading-none text-neutral-300">
+                              {branch.is_current ? '✓' : branch.is_default ? '•' : ''}
+                            </span>
+                          </div>
+                          {branch.is_current && props.gitSummary?.fileCount ? (
+                            <div className="mt-1 text-[11.5px] text-neutral-500">
+                              Uncommitted: {props.gitSummary.fileCount}{' '}
+                              {props.gitSummary.fileCount === 1 ? 'file' : 'files'}
+                            </div>
+                          ) : branch.is_default ? (
+                            <div className="mt-1 text-[11.5px] text-neutral-500">Default branch</div>
+                          ) : null}
+                        </button>
+                      ))
+                    ) : (
+                      <div className="rounded-[12px] border border-dashed border-white/8 px-3 py-3 text-[12.5px] text-neutral-500">
+                        No branches match.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-3 border-t border-white/6 pt-3">
+                    <button
+                      type="button"
+                      disabled={props.gitBusy || !canCreateGitBranch}
+                      onClick={() => void handleCreateGitBranch()}
+                      className="flex w-full items-center gap-2 rounded-[12px] px-3 py-2.5 text-left text-[13px] font-medium text-neutral-200 transition hover:bg-white/[0.05] hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <PlusIcon className="h-3.5 w-3.5 text-neutral-400" />
+                      <span className="truncate">
+                        {gitBranchQuery.trim()
+                          ? `Create and checkout ${gitBranchQuery.trim()}`
+                          : 'Create and checkout new branch...'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="relative" ref={permissionRef}>
             <button
               type="button"
@@ -665,6 +834,7 @@ export function ComposerDock(props: ComposerDockProps) {
                 setShowContinueMenu(false)
                 setShowModelMenu(false)
                 setShowReasoningMenu(false)
+                setShowGitBranchMenu(false)
               }}
               className={`flex items-center gap-1.5 text-[12.5px] font-medium transition-colors ${
                 props.selectedPermissionPreset === 'full-access'
@@ -716,7 +886,7 @@ export function ComposerDock(props: ComposerDockProps) {
             <button
               type="button"
               onClick={props.onOpenRateLimits}
-              title="Open rate limits"
+              title="Open account settings"
               className="group flex min-w-0 items-center gap-1.5 text-[12.5px] font-medium text-neutral-300 transition-colors hover:text-white focus-visible:outline-none"
             >
               <GaugeIcon className="h-3.25 w-3.25 shrink-0 text-neutral-500" />
@@ -724,7 +894,6 @@ export function ComposerDock(props: ComposerDockProps) {
                 {props.rateLimitDisplays && props.rateLimitDisplays.length > 0 ? (
                   props.rateLimitDisplays.map((item, index) => (
                     <span key={`${item.label}-${index}`} className="inline-flex items-center gap-1.5">
-                      <span className="truncate text-[12px] font-medium text-neutral-200">{item.label}</span>
                       <span
                         className={`truncate text-[12px] font-medium ${
                           item.tone === 'warning'
@@ -736,11 +905,6 @@ export function ComposerDock(props: ComposerDockProps) {
                       >
                         {item.value}
                       </span>
-                      {item.reset ? (
-                        <span className="truncate text-[11.5px] text-neutral-500">
-                          resets {item.reset}
-                        </span>
-                      ) : null}
                       {index < (props.rateLimitDisplays?.length ?? 0) - 1 ? (
                         <span className="text-neutral-600">·</span>
                       ) : null}

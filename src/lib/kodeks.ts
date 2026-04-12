@@ -190,6 +190,84 @@ export type UserInputItem =
       path: string
     }
 
+export type GitChangeStatus =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'type_changed'
+  | 'unmerged'
+
+export type GitProjectSnapshot = {
+  project_root: string
+  repo_root: string
+  branch: {
+    current?: string | null
+    default?: string | null
+    upstream?: string | null
+    head_sha?: string | null
+    detached: boolean
+    ahead: number
+    behind: number
+  }
+  branches: {
+    name: string
+    upstream?: string | null
+    head_sha?: string | null
+    is_current: boolean
+    is_default: boolean
+  }[]
+  counts: {
+    staged: number
+    working: number
+    untracked: number
+    total: number
+  }
+  files: {
+    path: string
+    original_path?: string | null
+    staged_status?: GitChangeStatus | null
+    unstaged_status?: GitChangeStatus | null
+    untracked: boolean
+    binary: boolean
+    additions: number
+    deletions: number
+  }[]
+  recent_commits: {
+    sha: string
+    subject: string
+    author: string
+    authored_at: string
+  }[]
+  latest_snapshot?: {
+    id: string
+    created_at: string
+    label: string
+  } | null
+  origin_url?: string | null
+}
+
+export type GitMutationResult = {
+  snapshot: GitProjectSnapshot
+  summary: string
+  branch_name?: string | null
+  commit_sha?: string | null
+  snapshot_id?: string | null
+}
+
+export type GitCommitPromptPayload = {
+  summary: string
+  prompt: string
+}
+
+export type GitCommitRequest = {
+  subject: string
+  body?: string | null
+  amend?: boolean
+}
+
+export type GitDiffTarget = 'working' | 'staged'
+
 export async function getSnapshot() {
   return invoke<Snapshot>('get_snapshot')
 }
@@ -312,6 +390,50 @@ export async function openExternalUrl(url: string) {
 
 export async function savePastedImage(bytes: number[], mimeType?: string | null) {
   return invoke<string>('save_pasted_image', { bytes, mimeType })
+}
+
+export async function getGitProject(projectRoot: string) {
+  return invoke<GitProjectSnapshot | null>('get_git_project', { projectRoot })
+}
+
+export async function readGitFileDiff(projectRoot: string, path: string, target: GitDiffTarget) {
+  return invoke<string>('read_git_file_diff', { projectRoot, path, target })
+}
+
+export async function stageGitPaths(projectRoot: string, paths: string[]) {
+  return invoke<GitMutationResult>('stage_git_paths', { projectRoot, paths })
+}
+
+export async function unstageGitPaths(projectRoot: string, paths: string[]) {
+  return invoke<GitMutationResult>('unstage_git_paths', { projectRoot, paths })
+}
+
+export async function createGitBranch(projectRoot: string, branchName: string, checkout = true) {
+  return invoke<GitMutationResult>('create_git_branch', { projectRoot, branchName, checkout })
+}
+
+export async function checkoutGitBranch(projectRoot: string, branchName: string) {
+  return invoke<GitMutationResult>('checkout_git_branch', { projectRoot, branchName })
+}
+
+export async function commitGitIndex(projectRoot: string, request: GitCommitRequest) {
+  return invoke<GitMutationResult>('commit_git_index', { projectRoot, request })
+}
+
+export async function pushGitBranch(projectRoot: string) {
+  return invoke<GitMutationResult>('push_git_branch', { projectRoot })
+}
+
+export async function createGitSnapshot(projectRoot: string) {
+  return invoke<GitMutationResult>('create_git_snapshot', { projectRoot })
+}
+
+export async function restoreGitSnapshot(projectRoot: string, snapshotId: string) {
+  return invoke<GitMutationResult>('restore_git_snapshot', { projectRoot, snapshotId })
+}
+
+export async function buildGitCommitPrompt(projectRoot: string) {
+  return invoke<GitCommitPromptPayload>('build_git_commit_prompt', { projectRoot })
 }
 
 export function onSnapshot(callback: (snapshot: Snapshot) => void) {

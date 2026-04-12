@@ -11,6 +11,7 @@ use serde::Deserialize;
 use tauri::{Emitter, Manager, State};
 use workspace_store::WorkspaceStorePayload;
 
+mod git;
 mod workspace_store;
 
 struct DesktopState {
@@ -405,6 +406,108 @@ async fn save_pasted_image(
     Ok(file_path.to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+async fn get_git_project(project_root: String) -> Result<Option<git::GitProjectSnapshot>, String> {
+    git::get_git_project(project_root)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn read_git_file_diff(
+    project_root: String,
+    path: String,
+    target: git::GitDiffTarget,
+) -> Result<String, String> {
+    git::read_git_file_diff(project_root, &path, target)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn stage_git_paths(
+    project_root: String,
+    paths: Vec<String>,
+) -> Result<git::GitMutationResult, String> {
+    git::stage_git_paths(project_root, paths)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn unstage_git_paths(
+    project_root: String,
+    paths: Vec<String>,
+) -> Result<git::GitMutationResult, String> {
+    git::unstage_git_paths(project_root, paths)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_git_branch(
+    project_root: String,
+    branch_name: String,
+    checkout: bool,
+) -> Result<git::GitMutationResult, String> {
+    git::create_git_branch(project_root, &branch_name, checkout)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn checkout_git_branch(
+    project_root: String,
+    branch_name: String,
+) -> Result<git::GitMutationResult, String> {
+    git::checkout_git_branch(project_root, &branch_name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn commit_git_index(
+    project_root: String,
+    request: git::GitCommitRequest,
+) -> Result<git::GitMutationResult, String> {
+    git::commit_git_index(project_root, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn push_git_branch(project_root: String) -> Result<git::GitMutationResult, String> {
+    git::push_git_branch(project_root)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_git_snapshot(project_root: String) -> Result<git::GitMutationResult, String> {
+    git::create_git_snapshot(project_root)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn restore_git_snapshot(
+    project_root: String,
+    snapshot_id: String,
+) -> Result<git::GitMutationResult, String> {
+    git::restore_git_snapshot(project_root, &snapshot_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn build_git_commit_prompt(
+    project_root: String,
+) -> Result<git::GitCommitPromptPayload, String> {
+    git::build_git_commit_prompt(project_root)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -467,6 +570,17 @@ pub fn run() {
             open_workspace_file,
             open_external_url,
             save_pasted_image,
+            get_git_project,
+            read_git_file_diff,
+            stage_git_paths,
+            unstage_git_paths,
+            create_git_branch,
+            checkout_git_branch,
+            commit_git_index,
+            push_git_branch,
+            create_git_snapshot,
+            restore_git_snapshot,
+            build_git_commit_prompt,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
