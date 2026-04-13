@@ -60,42 +60,6 @@ type SidebarProps = {
 const THREAD_PREVIEW_LIMIT = 5
 const SIDEBAR_FADE_EASE = [0.16, 1, 0.3, 1] as const
 
-const THREAD_GROUP_VARIANTS = {
-  hidden: {
-    opacity: 0,
-    y: -6,
-    transition: {
-      duration: 0.11,
-      ease: SIDEBAR_FADE_EASE,
-    },
-  },
-  visible: {
-    opacity: 1,
-    y: 0,
-    transition: {
-      duration: 0.18,
-      ease: SIDEBAR_FADE_EASE,
-    },
-  },
-} as const
-
-const THREAD_GROUP_REDUCED_VARIANTS = {
-  hidden: {
-    opacity: 0,
-    y: 0,
-    transition: {
-      duration: 0.01,
-    },
-  },
-  visible: {
-    opacity: 1,
-    y: 0,
-    transition: {
-      duration: 0.01,
-    },
-  },
-} as const
-
 const THREAD_MENU_VARIANTS = {
   hidden: {
     opacity: 0,
@@ -134,52 +98,6 @@ const THREAD_MENU_REDUCED_VARIANTS = {
       duration: 0.01,
     },
   },
-} as const
-
-const THREAD_ROW_VARIANTS = {
-  hidden: {
-    opacity: 0,
-    y: -5,
-    scale: 0.992,
-    transition: {
-      duration: 0.1,
-      ease: SIDEBAR_FADE_EASE,
-    },
-  },
-  visible: (index: number) => ({
-    opacity: 1,
-    y: 0,
-    scale: 1,
-    transition: {
-      delay: Math.min(index, 5) * 0.02,
-      duration: 0.16,
-      ease: SIDEBAR_FADE_EASE,
-    },
-  }),
-} as const
-
-const THREAD_ROW_REDUCED_VARIANTS = {
-  hidden: {
-    opacity: 0,
-    y: 0,
-    scale: 1,
-    transition: {
-      duration: 0.01,
-    },
-  },
-  visible: {
-    opacity: 1,
-    y: 0,
-    scale: 1,
-    transition: {
-      duration: 0.01,
-    },
-  },
-} as const
-
-const THREAD_ROW_LAYOUT_TRANSITION = {
-  duration: 0.18,
-  ease: SIDEBAR_FADE_EASE,
 } as const
 
 function SidebarUtilityButton(props: {
@@ -437,25 +355,11 @@ function CollapsibleBody(props: {
   children: ReactNode
   className?: string
 }) {
-  const prefersReducedMotion = useReducedMotion()
+  if (!props.open) {
+    return null
+  }
 
-  return (
-    <AnimatePresence initial={false}>
-      {props.open ? (
-        <m.div
-          key="expanded"
-          initial="hidden"
-          animate="visible"
-          exit="hidden"
-          variants={prefersReducedMotion ? THREAD_GROUP_REDUCED_VARIANTS : THREAD_GROUP_VARIANTS}
-          className={props.className}
-          style={prefersReducedMotion ? undefined : { transformOrigin: 'top left', willChange: 'opacity, transform' }}
-        >
-          {props.children}
-        </m.div>
-      ) : null}
-    </AnimatePresence>
-  )
+  return <div className={props.className}>{props.children}</div>
 }
 
 function ThreadRowMotion(props: {
@@ -464,24 +368,7 @@ function ThreadRowMotion(props: {
   children: ReactNode
   className?: string
 }) {
-  const prefersReducedMotion = useReducedMotion()
-
-  return (
-    <m.div
-      layout={!prefersReducedMotion}
-      layoutDependency={prefersReducedMotion ? undefined : props.rowKey}
-      custom={props.index}
-      initial="hidden"
-      animate="visible"
-      exit="hidden"
-      variants={prefersReducedMotion ? THREAD_ROW_REDUCED_VARIANTS : THREAD_ROW_VARIANTS}
-      transition={prefersReducedMotion ? undefined : THREAD_ROW_LAYOUT_TRANSITION}
-      className={props.className}
-      style={prefersReducedMotion ? undefined : { willChange: 'opacity, transform' }}
-    >
-      {props.children}
-    </m.div>
-  )
+  return <div className={props.className}>{props.children}</div>
 }
 
 function formatRelativeThreadAge(updatedAt: number) {
@@ -528,7 +415,6 @@ export function Sidebar(props: SidebarProps) {
   const [threadMenuId, setThreadMenuId] = useState<string | null>(null)
   const [archivedExpanded, setArchivedExpanded] = useState(false)
   const [expandedThreadGroups, setExpandedThreadGroups] = useState<Record<string, boolean>>({})
-  const prefersReducedMotion = useReducedMotion()
 
   const archivedLabel = useMemo(
     () => `${props.archivedThreads.length} ${props.archivedThreads.length === 1 ? 'thread' : 'threads'}`,
@@ -658,7 +544,7 @@ export function Sidebar(props: SidebarProps) {
                   <button
                     type="button"
                     aria-expanded={hasThreads ? groupExpanded : undefined}
-                    className={`flex min-w-0 flex-1 items-center gap-2 rounded-[10px] px-2 py-1.5 text-left transition ${
+                    className={`flex min-w-0 flex-1 items-center justify-between rounded-[10px] px-2 py-1 text-left transition ${
                       group.active
                         ? 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-shell-control)]'
                         : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]'
@@ -678,21 +564,24 @@ export function Sidebar(props: SidebarProps) {
                         : group.rootPath || group.label
                     }
                   >
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[color:var(--color-shell-faint)]" aria-hidden="true">
-                      <FolderGitIcon className="h-3.5 w-3.5 shrink-0" />
-                    </span>
-                    <span className="min-w-0 truncate text-[13.5px] font-semibold tracking-[-0.02em]">
-                      {group.label}
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      {hasThreads ? (
+                        <ChevronIcon direction={groupExpanded ? 'down' : 'right'} className="h-3.5 w-3.5 shrink-0" />
+                      ) : (
+                        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[color:var(--color-shell-faint)]" aria-hidden="true">
+                          <FolderGitIcon className="h-3.25 w-3.25 shrink-0" />
+                        </span>
+                      )}
+                      <span className="min-w-0 truncate text-[13.5px] font-medium tracking-[-0.018em]">
+                        {group.label}
+                      </span>
+                    </div>
+                    <span className="shrink-0 text-[11px] font-medium tracking-[-0.01em] text-[color:var(--color-shell-faint)]">
+                      {group.threads.length}
                     </span>
                   </button>
 
                   <div className="flex shrink-0 items-center gap-1">
-                    {!groupExpanded && hasThreads ? (
-                      <span className="text-[11px] font-medium tracking-[-0.01em] text-[color:var(--color-shell-faint)]">
-                        {group.threads.length}
-                      </span>
-                    ) : null}
-
                     {group.rootPath ? (
                       <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                         <button
@@ -767,74 +656,69 @@ export function Sidebar(props: SidebarProps) {
                 </div>
 
                 {hasThreads ? (
-                  <CollapsibleBody open={groupExpanded} className="pl-5 pt-0.5">
+                  <CollapsibleBody open={groupExpanded} className="pl-4.5 pt-0.5">
                     <div className="space-y-1">
-                      <AnimatePresence initial={false} mode="popLayout">
-                        {visibleThreads.map((thread, index) => (
-                          <ThreadRowMotion rowKey={thread.id} index={index} className="group/row relative" key={thread.id}>
-                            <m.button
-                              layout
-                              type="button"
-                              whileTap={prefersReducedMotion ? undefined : { scale: 0.985 }}
-                              transition={THREAD_ROW_LAYOUT_TRANSITION}
-                              className={`flex min-h-[32px] w-full items-center gap-2.5 rounded-[12px] px-3.5 py-1.5 text-left transition-[background-color,color,box-shadow,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                      {visibleThreads.map((thread, index) => (
+                        <ThreadRowMotion rowKey={thread.id} index={index} className="group/row relative" key={thread.id}>
+                          <button
+                            type="button"
+                            className={`flex min-h-[32px] w-full items-center gap-2.5 rounded-[12px] px-3.5 py-1.5 text-left transition-[background-color,color] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                              thread.active
+                                ? 'bg-[color:var(--color-shell-control)] text-[color:var(--color-shell-primary)]'
+                                : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
+                            }`}
+                            onClick={() => props.onSelectThread(thread.id)}
+                            title={
+                              thread.accountTag
+                                ? `${thread.label} · ${thread.accountTag}`
+                                : thread.label
+                            }
+                          >
+                            <span className="min-w-0 flex-1 truncate pr-12 text-[13.5px] font-medium tracking-[-0.018em]">
+                              {thread.label}
+                            </span>
+                            <span
+                              className={`shrink-0 text-[11.5px] font-medium tracking-[-0.012em] transition-opacity duration-150 group-hover/row:opacity-0 ${
                                 thread.active
-                                  ? 'bg-[color:var(--color-shell-control)] text-[color:var(--color-shell-primary)]'
-                                  : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
+                                  ? 'text-[color:var(--color-shell-muted)]'
+                                  : 'text-[color:var(--color-shell-faint)]'
                               }`}
-                              onClick={() => props.onSelectThread(thread.id)}
-                              title={
-                                thread.accountTag
-                                  ? `${thread.label} · ${thread.accountTag}`
-                                  : thread.label
-                              }
                             >
-                              <span className="min-w-0 flex-1 truncate pr-12 text-[13.5px] font-medium tracking-[-0.018em]">
-                                {thread.label}
-                              </span>
-                              <span
-                                className={`shrink-0 text-[11.5px] font-medium tracking-[-0.012em] transition-opacity duration-150 group-hover/row:opacity-0 ${
-                                  thread.active
-                                    ? 'text-[color:var(--color-shell-muted)]'
-                                    : 'text-[color:var(--color-shell-faint)]'
-                                }`}
-                              >
-                                {formatRelativeThreadAge(thread.updatedAt)}
-                              </span>
-                            </m.button>
+                              {formatRelativeThreadAge(thread.updatedAt)}
+                            </span>
+                          </button>
 
-                            <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
-                              <button
-                                type="button"
-                                className="pointer-events-auto rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
-                                onClick={(event) => {
-                                  event.stopPropagation()
-                                  setThreadMenuId((current) => (current === thread.id ? null : thread.id))
-                                  setProjectMenuKey(null)
-                                }}
-                                title="Thread options"
-                              >
-                                <MoreIcon className="h-3.25 w-3.25" />
-                              </button>
-                            </div>
+                          <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                            <button
+                              type="button"
+                              className="pointer-events-auto rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setThreadMenuId((current) => (current === thread.id ? null : thread.id))
+                                setProjectMenuKey(null)
+                              }}
+                              title="Thread options"
+                            >
+                              <MoreIcon className="h-3.25 w-3.25" />
+                            </button>
+                          </div>
 
-                            <AnimatePresence initial={false}>
-                              {threadMenuId === thread.id ? (
-                                <MenuSurface>
-                                  <MenuButton
-                                    label="Archive thread"
-                                    icon={ArchiveIcon}
-                                    onClick={() => {
-                                      props.onArchiveThread(thread.id)
-                                      setThreadMenuId(null)
-                                    }}
-                                  />
-                                </MenuSurface>
-                              ) : null}
-                            </AnimatePresence>
-                          </ThreadRowMotion>
-                        ))}
-                      </AnimatePresence>
+                          <AnimatePresence initial={false}>
+                            {threadMenuId === thread.id ? (
+                              <MenuSurface>
+                                <MenuButton
+                                  label="Archive thread"
+                                  icon={ArchiveIcon}
+                                  onClick={() => {
+                                    props.onArchiveThread(thread.id)
+                                    setThreadMenuId(null)
+                                  }}
+                                />
+                              </MenuSurface>
+                            ) : null}
+                          </AnimatePresence>
+                        </ThreadRowMotion>
+                      ))}
 
                       {hasOverflow ? (
                         <button
@@ -875,35 +759,29 @@ export function Sidebar(props: SidebarProps) {
 
               <CollapsibleBody open={archivedExpanded} className="pl-4.5 pt-0.5">
                 <div className="space-y-1">
-                  <AnimatePresence initial={false} mode="popLayout">
-                    {props.archivedThreads.map((thread, index) => (
-                      <ThreadRowMotion rowKey={thread.id} index={index} className="group/row relative" key={thread.id}>
-                        <m.div
-                          layout
-                          transition={THREAD_ROW_LAYOUT_TRANSITION}
-                          className="flex min-h-[32px] items-center gap-2.5 rounded-[12px] px-3.5 py-1.5 text-[color:var(--color-shell-muted)] transition-[background-color,color,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
-                        >
-                          <span className="min-w-0 flex-1 truncate pr-12 text-[13.5px] font-medium tracking-[-0.018em]">
-                            {thread.label}
-                          </span>
-                          <span className="shrink-0 text-[11.5px] font-medium tracking-[-0.012em] text-[color:var(--color-shell-faint)] transition-opacity duration-150 group-hover/row:opacity-0">
-                            {formatRelativeThreadAge(thread.updatedAt)}
-                          </span>
-                        </m.div>
+                  {props.archivedThreads.map((thread, index) => (
+                    <ThreadRowMotion rowKey={thread.id} index={index} className="group/row relative" key={thread.id}>
+                      <div className="flex min-h-[32px] items-center gap-2.5 rounded-[12px] px-3.5 py-1.5 text-[color:var(--color-shell-muted)] transition-[background-color,color] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]">
+                        <span className="min-w-0 flex-1 truncate pr-12 text-[13.5px] font-medium tracking-[-0.018em]">
+                          {thread.label}
+                        </span>
+                        <span className="shrink-0 text-[11.5px] font-medium tracking-[-0.012em] text-[color:var(--color-shell-faint)] transition-opacity duration-150 group-hover/row:opacity-0">
+                          {formatRelativeThreadAge(thread.updatedAt)}
+                        </span>
+                      </div>
 
-                        <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
-                          <button
-                            type="button"
-                            className="pointer-events-auto rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
-                            onClick={() => props.onUnarchiveThread(thread.id)}
-                            title="Restore thread"
-                          >
-                            <UndoIcon className="h-3.25 w-3.25" />
-                          </button>
-                        </div>
-                      </ThreadRowMotion>
-                    ))}
-                  </AnimatePresence>
+                      <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                        <button
+                          type="button"
+                          className="pointer-events-auto rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
+                          onClick={() => props.onUnarchiveThread(thread.id)}
+                          title="Restore thread"
+                        >
+                          <UndoIcon className="h-3.25 w-3.25" />
+                        </button>
+                      </div>
+                    </ThreadRowMotion>
+                  ))}
                 </div>
               </CollapsibleBody>
             </section>
