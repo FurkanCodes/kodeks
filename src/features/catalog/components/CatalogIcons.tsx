@@ -1,3 +1,4 @@
+import { convertFileSrc } from '@tauri-apps/api/core'
 import type { LucideIcon } from 'lucide-react'
 import {
   BookOpen,
@@ -25,6 +26,7 @@ import {
   Workflow,
   Wrench,
 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 
 const ICONS: Record<string, LucideIcon> = {
   adapt: TabletSmartphone,
@@ -59,29 +61,99 @@ const ICONS: Record<string, LucideIcon> = {
   netlify: Network,
 }
 
+const BRAND_IMAGE_SOURCES: Record<string, string> = {
+  box: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/box.svg',
+  calendar: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/googlecalendar.svg',
+  canva: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/canva.svg',
+  cloudflare: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/cloudflare.svg',
+  drive: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/googledrive.svg',
+  figma: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/figma.svg',
+  github: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/github.svg',
+  gmail: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/gmail.svg',
+  'google-calendar': 'https://cdn.jsdelivr.net/npm/simple-icons/icons/googlecalendar.svg',
+  'google-drive': 'https://cdn.jsdelivr.net/npm/simple-icons/icons/googledrive.svg',
+  'hugging-face': 'https://cdn.jsdelivr.net/npm/simple-icons/icons/huggingface.svg',
+  linear: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/linear.svg',
+  netlify: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/netlify.svg',
+  notion: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/notion.svg',
+  'openai-docs': 'https://cdn.jsdelivr.net/npm/simple-icons/icons/openai.svg',
+  sentry: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/sentry.svg',
+  slack: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/slack.svg',
+  sora: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/openai.svg',
+  vercel: 'https://cdn.jsdelivr.net/npm/simple-icons/icons/vercel.svg',
+}
+
 export function CatalogBrandIcon(props: {
   iconKey?: string | null
   label: string
   brandColor?: string | null
   className?: string
 }) {
-  const Icon = (props.iconKey && ICONS[props.iconKey]) || PlugZap
+  const [imageFailed, setImageFailed] = useState(false)
+  const imageSrc = useMemo(
+    () => (imageFailed ? null : resolveCatalogImageSource(props.iconKey)),
+    [imageFailed, props.iconKey],
+  )
+  const Icon = (!imageSrc && props.iconKey && ICONS[props.iconKey]) || PlugZap
   const accent = props.brandColor || '#d4d4d4'
   const background = hexWithAlpha(accent, '16')
-  const border = hexWithAlpha(accent, '28')
+  const imageBackground = 'rgba(248, 243, 235, 0.98)'
+
+  useEffect(() => {
+    setImageFailed(false)
+  }, [props.iconKey])
 
   return (
     <div
-      className={`flex size-11 shrink-0 items-center justify-center rounded-[13px] border ${props.className ?? ''}`}
+      className={`flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-[13px] ${props.className ?? ''}`}
       style={{
-        backgroundColor: background,
-        borderColor: border,
+        backgroundColor: imageSrc ? imageBackground : background,
       }}
       aria-hidden="true"
     >
-      <Icon className="h-5 w-5" style={{ color: accent }} />
+      {imageSrc ? (
+        <img
+          src={imageSrc}
+          alt=""
+          className="h-full w-full object-contain p-2"
+          loading="lazy"
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        <Icon className="h-5 w-5" style={{ color: accent }} />
+      )}
     </div>
   )
+}
+
+function resolveCatalogImageSource(value?: string | null) {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  const knownBrandSource = BRAND_IMAGE_SOURCES[trimmed]
+  if (knownBrandSource) {
+    return knownBrandSource
+  }
+
+  if (trimmed in ICONS) {
+    return null
+  }
+
+  if (/^(https?:\/\/|data:image\/|blob:|asset:)/i.test(trimmed)) {
+    return trimmed
+  }
+
+  if (trimmed.startsWith('/')) {
+    return convertFileSrc(trimmed)
+  }
+
+  if (/^\.{1,2}\//.test(trimmed) || /\/.+\.[a-z0-9]+($|\?)/i.test(trimmed) || /\.[a-z0-9]+($|\?)/i.test(trimmed)) {
+    return trimmed
+  }
+
+  return null
 }
 
 function hexWithAlpha(value: string, alpha: string) {

@@ -1,4 +1,4 @@
-import { ExternalLink, LoaderCircle } from 'lucide-react'
+import { ChevronLeft, ExternalLink, LoaderCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type {
   AsyncResource,
@@ -14,6 +14,7 @@ import type {
 import { getPluginCardStatus, getSkillCardStatus, skillScopeLabel, skillSourceKindLabel } from '../selectors'
 import type { CreateSkillDraft } from '../state'
 import type { CreatePluginDraft } from '../state'
+import { CatalogBrandIcon } from './CatalogIcons'
 
 type CatalogDrawerProps = {
   drawer: Exclude<CatalogDrawerState, null>
@@ -47,28 +48,36 @@ type CatalogDrawerProps = {
 
 export function CatalogDrawer(props: CatalogDrawerProps) {
   const title = drawerTitle(props.drawer, props.activeTab)
+  const detailDrawer = props.drawer.kind === 'plugin_details' || props.drawer.kind === 'skill_details'
 
   return (
-    <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-white/5 bg-[#0b0b0c]">
-      <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
-        <div>
-          <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-[color:var(--color-shell-faint)]">
-            Catalog
+    <aside
+      role="dialog"
+      aria-modal="true"
+      className="flex h-full w-full flex-col overflow-hidden rounded-[30px] bg-[rgba(15,18,22,0.96)] shadow-[0_28px_90px_rgba(0,0,0,0.42)] backdrop-blur-2xl"
+    >
+      <div className="px-7 py-6 shadow-[inset_0_-1px_0_rgba(255,255,255,0.035)]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-[color:var(--color-shell-faint)]">
+              Catalog
+            </div>
+            <div className="mt-2 text-[22px] font-semibold tracking-[-0.045em] text-[color:var(--color-shell-primary)]">
+              {title}
+            </div>
           </div>
-          <div className="mt-1 text-[15px] font-semibold tracking-[-0.02em] text-[color:var(--color-shell-primary)]">
-            {title}
-          </div>
+          <button
+            type="button"
+            onClick={props.onClose}
+            className="inline-flex items-center gap-2 rounded-full bg-[color:var(--color-shell-control)] px-4 py-2 text-[12.5px] font-medium text-[color:var(--color-shell-muted)] transition hover:bg-[color:var(--color-shell-control-hover)] hover:text-white"
+          >
+            {detailDrawer ? <ChevronLeft className="h-3.5 w-3.5" /> : null}
+            {detailDrawer ? 'Back' : 'Close'}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={props.onClose}
-          className="rounded-[10px] border border-white/5 bg-white/[0.03] px-2.5 py-1.5 text-[12px] text-[color:var(--color-shell-muted)] transition hover:border-white/10 hover:text-white"
-        >
-          Close
-        </button>
       </div>
 
-      <div className="shell-scroll flex-1 overflow-y-auto px-5 py-5">
+      <div className="shell-scroll flex-1 overflow-y-auto px-7 py-7">
         {renderDrawerContent(props)}
       </div>
     </aside>
@@ -105,38 +114,119 @@ function renderPluginDetails(props: CatalogDrawerProps) {
 
   const detail = resource.data
   const busy = Boolean(props.pluginBusy[detail.catalog.plugin_id])
+  const status = getPluginCardStatusFromDetail(detail)
+  const includes = [
+    {
+      key: `${detail.catalog.plugin_id}-plugin`,
+      kind: 'Plugin',
+      title: detail.catalog.display_name,
+      description: detail.catalog.short_description,
+      state: statusLabel(status),
+    },
+    ...detail.catalog.bundled_skills.map((item) => ({
+      key: `skill-${item}`,
+      kind: 'Skill',
+      title: titleCaseToken(item),
+      description: 'Bundled with this plugin and available when the plugin is installed.',
+      state: 'Included',
+    })),
+    ...detail.catalog.bundled_apps.map((item) => ({
+      key: `app-${item}`,
+      kind: 'App',
+      title: titleCaseToken(item),
+      description: 'Connector surface installed alongside the plugin bundle.',
+      state: 'Included',
+    })),
+    ...detail.catalog.bundled_mcp_servers.map((item) => ({
+      key: `mcp-${item}`,
+      kind: 'MCP server',
+      title: titleCaseToken(item),
+      description: 'Server capability exposed through the plugin package.',
+      state: 'Included',
+    })),
+  ]
+
+  const infoRows = [
+    { label: 'Category', value: titleCaseToken(detail.catalog.category) },
+    {
+      label: 'Built by',
+      value:
+        detail.source.publisher && detail.source.publisher !== detail.source.display_name
+          ? `${detail.source.publisher}, ${detail.source.display_name}`
+          : detail.source.display_name,
+    },
+    {
+      label: 'Capabilities',
+      value:
+        detail.catalog.capabilities.length > 0
+          ? detail.catalog.capabilities.map(titleCaseToken).join(', ')
+          : 'None declared',
+    },
+    { label: 'Developer', value: detail.catalog.developer_name },
+    {
+      label: 'Version',
+      value: detail.installed_state.installed_version ? `v${detail.installed_state.installed_version}` : 'Not installed',
+    },
+    {
+      label: 'Website',
+      value: detail.catalog.website_url ? (
+        <InfoLink label="Open site" onClick={() => void props.onOpenExternalUrl(detail.catalog.website_url!)} />
+      ) : (
+        'None'
+      ),
+    },
+    {
+      label: 'Privacy policy',
+      value: detail.catalog.privacy_policy_url ? (
+        <InfoLink label="Open policy" onClick={() => void props.onOpenExternalUrl(detail.catalog.privacy_policy_url!)} />
+      ) : (
+        'None'
+      ),
+    },
+    {
+      label: 'Terms of service',
+      value: detail.catalog.terms_of_service_url ? (
+        <InfoLink label="Open terms" onClick={() => void props.onOpenExternalUrl(detail.catalog.terms_of_service_url!)} />
+      ) : (
+        'None'
+      ),
+    },
+  ]
 
   return (
-    <div className="space-y-5">
-      <div>
-        <div className="text-[18px] font-semibold tracking-[-0.03em] text-[color:var(--color-shell-primary)]">
-          {detail.catalog.display_name}
-        </div>
-        <div className="mt-2 text-[13px] leading-6 text-[color:var(--color-shell-muted)]">
-          {detail.catalog.long_description}
-        </div>
-      </div>
+    <div className="space-y-8">
+      <DetailHero
+        iconKey={detail.catalog.logo}
+        title={detail.catalog.display_name}
+        subtitle={detail.catalog.short_description}
+        description={detail.catalog.long_description}
+        eyebrow="Plugin"
+        chips={[
+          { label: detail.source.display_name, tone: 'neutral' },
+          { label: statusLabel(status), tone: statusTone(status) },
+          ...(detail.installed_state.installed_version
+            ? [{ label: `v${detail.installed_state.installed_version}`, tone: 'neutral' as const }]
+            : []),
+        ]}
+      />
 
-      <div className="flex flex-wrap gap-2">
-        <StatusChip label={detail.source.display_name} tone="neutral" />
-        <StatusChip label={statusLabel(getPluginCardStatusFromDetail(detail))} tone={statusTone(getPluginCardStatusFromDetail(detail))} />
-        {detail.installed_state.installed_version ? (
-          <StatusChip label={`v${detail.installed_state.installed_version}`} tone="neutral" />
-        ) : null}
-      </div>
+      <AmbientFeatureCard title={detail.catalog.display_name} summary={detail.catalog.long_description} />
 
-      <div className="grid grid-cols-2 gap-3">
-        <DetailStat label="Publisher" value={detail.source.publisher} />
-        <DetailStat label="Category" value={detail.catalog.category.replace(/_/g, ' ')} />
-      </div>
+      <DetailSection title="Includes">
+        <IncludeList items={includes} />
+      </DetailSection>
 
-      <ListBlock title="Capabilities" items={detail.catalog.capabilities.map((item) => item.replace(/_/g, ' '))} />
-      <ListBlock title="Bundled skills" items={detail.catalog.bundled_skills} />
-      <ListBlock title="Bundled apps" items={detail.catalog.bundled_apps} />
-      <ListBlock title="Bundled MCP servers" items={detail.catalog.bundled_mcp_servers} />
-      <ListBlock title="Operational notes" items={detail.management_notes} />
+      <DetailSection title="Information">
+        <InfoTable rows={infoRows} />
+      </DetailSection>
 
-      <div className="flex flex-wrap gap-2">
+      {detail.management_notes.length > 0 ? (
+        <DetailSection title="Operational notes">
+          <NarrativeBlock items={detail.management_notes} />
+        </DetailSection>
+      ) : null}
+
+      <div className="flex flex-wrap gap-2 pt-1">
         {!detail.installed_state.is_installed ? (
           <PrimaryButton disabled={busy} onClick={() => void props.onInstallPlugin(detail.catalog.plugin_id)}>
             Install plugin
@@ -163,26 +253,6 @@ function renderPluginDetails(props: CatalogDrawerProps) {
           </DangerButton>
         ) : null}
       </div>
-
-      <LinkButtons
-        items={[
-          {
-            label: 'Website',
-            url: detail.catalog.website_url,
-            onOpen: props.onOpenExternalUrl,
-          },
-          {
-            label: 'Privacy',
-            url: detail.catalog.privacy_policy_url,
-            onOpen: props.onOpenExternalUrl,
-          },
-          {
-            label: 'Terms',
-            url: detail.catalog.terms_of_service_url,
-            onOpen: props.onOpenExternalUrl,
-          },
-        ]}
-      />
     </div>
   )
 }
@@ -198,33 +268,87 @@ function renderSkillDetails(props: CatalogDrawerProps) {
 
   const detail = resource.data
   const busy = Boolean(props.skillBusy[detail.record.skill_id])
+  const status = getSkillCardStatusFromDetail(detail)
+  const includes = [
+    {
+      key: `${detail.record.skill_id}-skill`,
+      kind: 'Skill',
+      title: detail.record.display_name,
+      description: detail.record.short_description,
+      state: statusLabel(status),
+    },
+    ...(detail.bundled_by_plugin_name
+      ? [
+          {
+            key: `plugin-${detail.bundled_by_plugin_name}`,
+            kind: 'Plugin',
+            title: detail.bundled_by_plugin_name,
+            description: 'This skill ships as part of a plugin bundle.',
+            state: 'Bundled',
+          },
+        ]
+      : []),
+    ...detail.dependency_notes.map((item) => ({
+      key: `dep-${item}`,
+      kind: 'Dependency',
+      title: item,
+      description: 'Required or recommended for the skill workflow.',
+      state: 'Linked',
+    })),
+  ]
+
+  const infoRows = [
+    { label: 'Scope', value: skillScopeLabel(detail.record.scope) },
+    { label: 'Source', value: skillSourceKindLabel(detail.record.source_kind) },
+    {
+      label: 'Invocation',
+      value: detail.invocation_behavior === 'explicit_or_implicit' ? 'Explicit or implicit' : 'Explicit only',
+    },
+    {
+      label: 'Status',
+      value: detail.record.is_installed ? (detail.record.enabled ? 'Installed and enabled' : 'Installed and disabled') : 'Available',
+    },
+    {
+      label: 'Default prompt',
+      value: detail.record.default_prompt ?? 'None',
+    },
+    {
+      label: 'Local files',
+      value: detail.record.path ? (
+        <InfoLink label="Open files" onClick={() => void props.onOpenLocalPath(detail.record.path!)} />
+      ) : (
+        'None'
+      ),
+    },
+  ]
 
   return (
-    <div className="space-y-5">
-      <div>
-        <div className="text-[18px] font-semibold tracking-[-0.03em] text-[color:var(--color-shell-primary)]">
-          {detail.record.display_name}
-        </div>
-        <div className="mt-2 text-[13px] leading-6 text-[color:var(--color-shell-muted)]">
-          {detail.record.description}
-        </div>
-      </div>
+    <div className="space-y-8">
+      <DetailHero
+        iconKey={detail.record.icon}
+        brandColor={detail.record.brand_color}
+        title={detail.record.display_name}
+        subtitle={detail.record.short_description}
+        description={detail.record.description}
+        eyebrow="Skill"
+        chips={[
+          { label: skillScopeLabel(detail.record.scope), tone: 'neutral' },
+          { label: skillSourceKindLabel(detail.record.source_kind), tone: 'neutral' },
+          { label: statusLabel(status), tone: statusTone(status) },
+        ]}
+      />
 
-      <div className="flex flex-wrap gap-2">
-        <StatusChip label={skillScopeLabel(detail.record.scope)} tone="neutral" />
-        <StatusChip label={skillSourceKindLabel(detail.record.source_kind)} tone="neutral" />
-        <StatusChip label={statusLabel(getSkillCardStatusFromDetail(detail))} tone={statusTone(getSkillCardStatusFromDetail(detail))} />
-      </div>
+      <AmbientFeatureCard title={detail.record.display_name} summary={detail.record.description} />
 
-      <DetailStat label="Invocation" value={detail.invocation_behavior === 'explicit_or_implicit' ? 'Explicit or implicit' : 'Explicit only'} />
-      {detail.bundled_by_plugin_name ? (
-        <DetailStat label="Bundled by" value={detail.bundled_by_plugin_name} />
-      ) : null}
-      {detail.record.default_prompt ? <DetailStat label="Default prompt" value={detail.record.default_prompt} /> : null}
+      <DetailSection title="Includes">
+        <IncludeList items={includes.length > 0 ? includes : []} emptyLabel="No related items" />
+      </DetailSection>
 
-      <ListBlock title="Dependencies" items={detail.dependency_notes.length > 0 ? detail.dependency_notes : ['No declared dependencies']} />
+      <DetailSection title="Information">
+        <InfoTable rows={infoRows} />
+      </DetailSection>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2 pt-1">
         {!detail.record.is_installed && detail.record.source_kind !== 'plugin_bundled' ? (
           <PrimaryButton disabled={busy} onClick={() => void props.onInstallSkill(detail.record.skill_id)}>
             Add skill
@@ -257,7 +381,7 @@ function renderPluginManage(props: CatalogDrawerProps) {
   return (
     <div className="space-y-3">
       {entries.map((entry) => (
-        <div key={entry.catalog.plugin_id} className="rounded-[16px] border border-white/6 bg-white/[0.03] p-3.5">
+        <div key={entry.catalog.plugin_id} className="rounded-[16px] bg-[color:var(--color-shell-control)] p-3.5">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[13px] font-medium text-[color:var(--color-shell-primary)]">
@@ -300,7 +424,7 @@ function renderSkillManage(props: CatalogDrawerProps) {
   return (
     <div className="space-y-3">
       {entries.map((entry) => (
-        <div key={entry.record.skill_id} className="rounded-[16px] border border-white/6 bg-white/[0.03] p-3.5">
+        <div key={entry.record.skill_id} className="rounded-[16px] bg-[color:var(--color-shell-control)] p-3.5">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[13px] font-medium text-[color:var(--color-shell-primary)]">
@@ -336,7 +460,7 @@ function renderSkillCreate(props: CatalogDrawerProps) {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-[16px] border border-white/6 bg-white/[0.03] p-4">
+      <div className="rounded-[16px] bg-[color:var(--color-shell-control)] p-4">
         <FormField label="Skill name">
           <input
             value={draft.name}
@@ -410,7 +534,7 @@ function renderSkillCreate(props: CatalogDrawerProps) {
       </div>
 
       {props.lastScaffoldResult ? (
-        <div className="rounded-[16px] border border-emerald-400/15 bg-emerald-500/8 p-4">
+        <div className="rounded-[16px] bg-emerald-500/10 p-4">
           <div className="text-[12px] font-medium text-emerald-100">Last scaffold created</div>
           <div className="mt-2 text-[12px] leading-6 text-emerald-50/90">
             {props.lastScaffoldResult.path}
@@ -427,7 +551,7 @@ function renderPluginCreate(props: CatalogDrawerProps) {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-[16px] border border-white/6 bg-white/[0.03] p-4">
+      <div className="rounded-[16px] bg-[color:var(--color-shell-control)] p-4">
         <FormField label="Plugin name">
           <input
             value={draft.name}
@@ -486,7 +610,7 @@ function renderPluginCreate(props: CatalogDrawerProps) {
               type="checkbox"
               checked={draft.with_skills}
               onChange={(event) => props.onSetCreatePluginField('with_skills', event.currentTarget.checked)}
-              className="size-4 rounded border-white/10 bg-white/[0.05]"
+            className="size-4 rounded border-white/10 bg-white/[0.05]"
             />
             Create a bundled `skills/` directory with a starter workflow skill
           </label>
@@ -495,7 +619,7 @@ function renderPluginCreate(props: CatalogDrawerProps) {
               type="checkbox"
               checked={draft.with_apps}
               onChange={(event) => props.onSetCreatePluginField('with_apps', event.currentTarget.checked)}
-              className="size-4 rounded border-white/10 bg-white/[0.05]"
+            className="size-4 rounded border-white/10 bg-white/[0.05]"
             />
             Create an `.app.json` connector stub plus an integration brief
           </label>
@@ -504,7 +628,7 @@ function renderPluginCreate(props: CatalogDrawerProps) {
               type="checkbox"
               checked={draft.with_mcp_server}
               onChange={(event) => props.onSetCreatePluginField('with_mcp_server', event.currentTarget.checked)}
-              className="size-4 rounded border-white/10 bg-white/[0.05]"
+            className="size-4 rounded border-white/10 bg-white/[0.05]"
             />
             Create an `.mcp.json` server stub plus an integration brief
           </label>
@@ -518,7 +642,7 @@ function renderPluginCreate(props: CatalogDrawerProps) {
       </div>
 
       {props.lastPluginScaffoldResult ? (
-        <div className="rounded-[16px] border border-emerald-400/15 bg-emerald-500/8 p-4">
+        <div className="rounded-[16px] bg-emerald-500/10 p-4">
           <div className="text-[12px] font-medium text-emerald-100">Last plugin scaffold created</div>
           <div className="mt-2 text-[12px] leading-6 text-emerald-50/90">
             {props.lastPluginScaffoldResult.path}
@@ -532,6 +656,151 @@ function renderPluginCreate(props: CatalogDrawerProps) {
         </div>
       ) : null}
     </div>
+  )
+}
+
+function DetailHero(props: {
+  eyebrow: string
+  iconKey?: string | null
+  brandColor?: string | null
+  title: string
+  subtitle: string
+  description: string
+  chips: { label: string; tone: 'neutral' | 'success' | 'warning' | 'muted' }[]
+}) {
+  return (
+    <section className="space-y-4">
+      <CatalogBrandIcon
+        iconKey={props.iconKey}
+        label={props.title}
+        brandColor={props.brandColor}
+        className="size-[4.5rem] rounded-[22px]"
+      />
+      <div>
+        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--color-shell-faint)]">
+          {props.eyebrow}
+        </div>
+        <h2 className="mt-3 text-[2rem] font-semibold tracking-[-0.06em] text-[color:var(--color-shell-primary)]">
+          {props.title}
+        </h2>
+        <p className="mt-2 text-[1.05rem] leading-8 text-[color:var(--color-shell-muted)]">{props.subtitle}</p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {props.chips.map((chip) => (
+          <StatusChip key={`${chip.label}-${chip.tone}`} label={chip.label} tone={chip.tone} />
+        ))}
+      </div>
+      <p className="max-w-[34rem] text-[14.5px] leading-8 text-[color:var(--color-shell-muted)]">{props.description}</p>
+    </section>
+  )
+}
+
+function AmbientFeatureCard(props: { title: string; summary: string }) {
+  return (
+    <div className="overflow-hidden rounded-[28px] bg-[radial-gradient(circle_at_18%_22%,rgba(111,146,255,0.22),transparent_35%),radial-gradient(circle_at_82%_18%,rgba(183,145,255,0.18),transparent_30%),linear-gradient(135deg,rgba(29,36,60,0.94),rgba(28,22,44,0.92))] p-5">
+      <div className="rounded-[22px] bg-[rgba(11,13,18,0.76)] px-6 py-5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)] backdrop-blur-md">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--color-shell-faint)]">
+          Preview
+        </div>
+        <div className="mt-3 text-[1.15rem] font-medium leading-8 tracking-[-0.03em] text-[color:var(--color-shell-primary)]">
+          <span className="text-white">{props.title}</span> {condensePreviewCopy(props.summary)}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DetailSection(props: { title: string; children: ReactNode }) {
+  return (
+    <section className="space-y-4">
+      <h3 className="text-[1.05rem] font-semibold tracking-[-0.03em] text-[color:var(--color-shell-primary)]">
+        {props.title}
+      </h3>
+      {props.children}
+    </section>
+  )
+}
+
+function IncludeList(props: {
+  items: { key: string; kind: string; title: string; description: string; state: string }[]
+  emptyLabel?: string
+}) {
+  if (props.items.length === 0) {
+    return (
+      <div className="rounded-[22px] bg-[color:var(--color-shell-control)] px-5 py-8 text-[13px] text-[color:var(--color-shell-faint)]">
+        {props.emptyLabel ?? 'Nothing included'}
+      </div>
+    )
+  }
+
+  return (
+    <div className="overflow-hidden rounded-[22px] bg-[color:var(--color-shell-control)]">
+      {props.items.map((item, index) => (
+        <div
+          key={item.key}
+          className={`flex items-start gap-4 px-5 py-4 ${index > 0 ? 'shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]' : ''}`}
+        >
+          <div className="mt-0.5 flex size-12 shrink-0 items-center justify-center rounded-[16px] bg-black/10 text-[12px] font-semibold text-[color:var(--color-shell-faint)]">
+            {item.kind.slice(0, 1)}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-[17px] font-semibold tracking-[-0.03em] text-[color:var(--color-shell-primary)]">
+                {item.title}
+              </span>
+              <span className="text-[12px] text-[color:var(--color-shell-faint)]">{item.kind}</span>
+            </div>
+            <div className="mt-1 text-[14px] leading-6 text-[color:var(--color-shell-muted)]">{item.description}</div>
+          </div>
+          <span className="rounded-full bg-black/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[color:var(--color-shell-faint)]">
+            {item.state}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function InfoTable(props: { rows: { label: string; value: ReactNode }[] }) {
+  return (
+    <div className="overflow-hidden rounded-[22px] bg-[color:var(--color-shell-control)]">
+      {props.rows.map((row, index) => (
+        <div
+          key={row.label}
+          className={`grid gap-3 px-5 py-4 md:grid-cols-[11rem_minmax(0,1fr)] ${index > 0 ? 'shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]' : ''}`}
+        >
+          <div className="text-[14px] text-[color:var(--color-shell-muted)]">{row.label}</div>
+          <div className="text-[14.5px] leading-7 text-[color:var(--color-shell-primary)]">{row.value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function NarrativeBlock(props: { items: string[] }) {
+  return (
+    <div className="rounded-[22px] bg-[color:var(--color-shell-control)] px-5 py-4">
+      <div className="space-y-2.5">
+        {props.items.map((item) => (
+          <div key={item} className="text-[14px] leading-7 text-[color:var(--color-shell-muted)]">
+            {item}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function InfoLink(props: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      className="inline-flex items-center gap-1.5 text-[14px] font-medium text-[color:var(--color-shell-primary)] transition hover:text-white"
+    >
+      {props.label}
+      <ExternalLink className="h-3.5 w-3.5" />
+    </button>
   )
 }
 
@@ -550,7 +819,7 @@ function DrawerError(props: { message: string }) {
 
 function DrawerEmpty(props: { title: string; description: string }) {
   return (
-    <div className="rounded-[18px] border border-dashed border-white/8 bg-white/[0.02] px-4 py-8 text-center">
+    <div className="rounded-[22px] bg-[color:var(--color-shell-control)] px-4 py-8 text-center">
       <div className="text-[15px] font-medium text-[color:var(--color-shell-primary)]">{props.title}</div>
       <div className="mt-2 text-[12.5px] leading-6 text-[color:var(--color-shell-muted)]">
         {props.description}
@@ -559,50 +828,34 @@ function DrawerEmpty(props: { title: string; description: string }) {
   )
 }
 
-function DetailStat(props: { label: string; value: string }) {
-  return (
-    <div className="rounded-[16px] border border-white/6 bg-white/[0.03] p-3">
-      <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-[color:var(--color-shell-faint)]">
-        {props.label}
-      </div>
-      <div className="mt-2 text-[12.5px] leading-6 text-[color:var(--color-shell-primary)]">{props.value}</div>
-    </div>
-  )
+function condensePreviewCopy(value: string) {
+  const normalized = value.trim().replace(/\s+/g, ' ')
+  if (normalized.length <= 96) {
+    return normalized
+  }
+  return `${normalized.slice(0, 93).trimEnd()}...`
 }
 
-function ListBlock(props: { title: string; items: string[] }) {
-  return (
-    <div className="rounded-[16px] border border-white/6 bg-white/[0.03] p-4">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[color:var(--color-shell-faint)]">
-        {props.title}
-      </div>
-      <div className="mt-3 space-y-2">
-        {props.items.length > 0 ? (
-          props.items.map((item) => (
-            <div key={item} className="text-[12.5px] leading-6 text-[color:var(--color-shell-muted)]">
-              {item}
-            </div>
-          ))
-        ) : (
-          <div className="text-[12.5px] leading-6 text-[color:var(--color-shell-faint)]">None</div>
-        )}
-      </div>
-    </div>
-  )
+function titleCaseToken(value: string) {
+  return value
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 function StatusChip(props: { label: string; tone: 'neutral' | 'success' | 'warning' | 'muted' }) {
   const toneClass =
     props.tone === 'success'
-      ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100'
+      ? 'bg-emerald-400/10 text-emerald-100'
       : props.tone === 'warning'
-        ? 'border-amber-300/20 bg-amber-400/10 text-amber-100'
+        ? 'bg-amber-400/10 text-amber-100'
         : props.tone === 'muted'
-          ? 'border-white/5 bg-white/[0.03] text-[color:var(--color-shell-faint)]'
-          : 'border-white/8 bg-white/[0.04] text-[color:var(--color-shell-primary)]'
+          ? 'bg-white/[0.04] text-[color:var(--color-shell-faint)]'
+          : 'bg-[color:var(--color-shell-control)] text-[color:var(--color-shell-primary)]'
 
   return (
-    <span className={`rounded-full border px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] ${toneClass}`}>
+    <span className={`rounded-full px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-[0.1em] ${toneClass}`}>
       {props.label}
     </span>
   )
@@ -661,37 +914,13 @@ function getSkillCardStatusFromDetail(detail: SkillDetails) {
   })
 }
 
-function LinkButtons(props: {
-  items: {
-    label: string
-    url: string | null
-    onOpen: (url: string) => Promise<void>
-  }[]
-}) {
-  const available = props.items.filter((item) => item.url)
-  if (available.length === 0) {
-    return null
-  }
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      {available.map((item) => (
-        <SecondaryButton key={item.label} onClick={() => void item.onOpen(item.url!)}>
-          <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-          {item.label}
-        </SecondaryButton>
-      ))}
-    </div>
-  )
-}
-
 function PrimaryButton(props: { children: string; disabled?: boolean; onClick: () => void }) {
   return (
     <button
       type="button"
       disabled={props.disabled}
       onClick={props.onClick}
-      className="inline-flex items-center rounded-[11px] border border-white/8 bg-white/[0.09] px-3 py-2 text-[12.5px] font-medium text-white transition hover:bg-white/[0.14] disabled:cursor-not-allowed disabled:opacity-60"
+      className="inline-flex items-center rounded-full bg-[color:var(--color-shell-elevated-strong)] px-3.5 py-2 text-[12.5px] font-semibold text-white transition hover:bg-[color:var(--color-shell-control-hover)] disabled:cursor-not-allowed disabled:opacity-60"
     >
       {props.children}
     </button>
@@ -704,7 +933,7 @@ function SecondaryButton(props: { children: ReactNode; disabled?: boolean; onCli
       type="button"
       disabled={props.disabled}
       onClick={props.onClick}
-      className="inline-flex items-center rounded-[11px] border border-white/6 bg-white/[0.03] px-3 py-2 text-[12.5px] font-medium text-[color:var(--color-shell-primary)] transition hover:border-white/10 hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-60"
+      className="inline-flex items-center rounded-full bg-[color:var(--color-shell-control)] px-3.5 py-2 text-[12.5px] font-semibold text-[color:var(--color-shell-primary)] transition hover:bg-[color:var(--color-shell-control-hover)] disabled:cursor-not-allowed disabled:opacity-60"
     >
       {props.children}
     </button>
@@ -717,7 +946,7 @@ function DangerButton(props: { children: string; disabled?: boolean; onClick: ()
       type="button"
       disabled={props.disabled}
       onClick={props.onClick}
-      className="inline-flex items-center rounded-[11px] border border-red-400/15 bg-red-500/10 px-3 py-2 text-[12.5px] font-medium text-red-100 transition hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+      className="inline-flex items-center rounded-full bg-red-500/12 px-3.5 py-2 text-[12.5px] font-semibold text-red-100 transition hover:bg-red-500/18 disabled:cursor-not-allowed disabled:opacity-60"
     >
       {props.children}
     </button>
@@ -729,7 +958,7 @@ function MiniButton(props: { children: string; onClick: () => void }) {
     <button
       type="button"
       onClick={props.onClick}
-      className="rounded-[10px] border border-white/6 bg-white/[0.03] px-2.5 py-1.5 text-[11.5px] text-[color:var(--color-shell-primary)] transition hover:border-white/10 hover:bg-white/[0.06]"
+      className="rounded-full bg-[color:var(--color-shell-control)] px-2.5 py-1.5 text-[11.5px] text-[color:var(--color-shell-primary)] transition hover:bg-[color:var(--color-shell-control-hover)]"
     >
       {props.children}
     </button>
@@ -741,7 +970,7 @@ function MiniDangerButton(props: { children: string; onClick: () => void }) {
     <button
       type="button"
       onClick={props.onClick}
-      className="rounded-[10px] border border-red-400/15 bg-red-500/10 px-2.5 py-1.5 text-[11.5px] text-red-100 transition hover:bg-red-500/15"
+      className="rounded-full bg-red-500/12 px-2.5 py-1.5 text-[11.5px] text-red-100 transition hover:bg-red-500/18"
     >
       {props.children}
     </button>
@@ -760,7 +989,7 @@ function FormField(props: { label: string; children: ReactNode }) {
 }
 
 const inputClassName =
-  'w-full rounded-[12px] border border-white/6 bg-white/[0.04] px-3 py-2 text-[12.5px] text-[color:var(--color-shell-primary)] outline-none transition placeholder:text-[color:var(--color-shell-faint)] focus:border-white/12'
+  'h-10 w-full rounded-[12px] bg-white/[0.045] px-3 py-2 text-[12.5px] text-[color:var(--color-shell-primary)] outline-none transition placeholder:text-[color:var(--color-shell-faint)] focus:bg-white/[0.06]'
 
 function drawerTitle(drawer: Exclude<CatalogDrawerState, null>, activeTab: CatalogTab) {
   switch (drawer.kind) {

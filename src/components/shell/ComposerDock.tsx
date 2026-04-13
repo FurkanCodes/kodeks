@@ -359,10 +359,10 @@ export function ComposerDock(props: ComposerDockProps) {
   }
 
   return (
-    <div className="bg-gradient-to-t from-[#09090b] via-[#09090b] to-transparent px-4 pb-3.5 pt-1">
-      <div className="relative mx-auto w-full max-w-[680px]">
+    <div className="bg-gradient-to-t from-[#090b0e] via-[#090b0e] to-transparent px-4 pb-3.5 pt-1">
+      <div className="relative mx-auto w-full max-w-[700px]">
         {referenceSuggestions.length > 0 ? (
-          <div className="mb-1.5 rounded-[12px] border border-white/5 bg-[#121214] p-1 shadow-2xl">
+          <div className="mb-2 rounded-[16px] bg-[color:var(--color-shell-elevated-strong)] p-1.5 shadow-[var(--shadow-shell-elevated)]">
             <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">
               Project files
             </div>
@@ -372,7 +372,7 @@ export function ComposerDock(props: ComposerDockProps) {
                   type="button"
                   key={reference}
                   onClick={() => handleSelectReference(reference)}
-                  className="flex w-full items-center gap-2 rounded-[9px] px-2.5 py-1.5 text-left text-[12px] text-neutral-300 transition hover:bg-white/5 hover:text-white"
+                  className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-[12.5px] text-neutral-300 transition hover:bg-[color:var(--color-shell-control)] hover:text-white"
                 >
                   <PaperclipIcon className="h-3.25 w-3.25 text-neutral-500" />
                   <span className="truncate">{reference}</span>
@@ -383,18 +383,18 @@ export function ComposerDock(props: ComposerDockProps) {
         ) : null}
 
         <div
-          className={`flex flex-col rounded-[16px] transition-all duration-200 ${
+          className={`flex flex-col rounded-[20px] transition-all duration-200 ${
             focused
-              ? 'bg-white/[0.05] shadow-[0_0_0_1px_rgba(255,255,255,0.1)]'
-              : 'bg-white/[0.03]'
+              ? 'bg-[color:var(--color-shell-elevated)] shadow-[0_18px_40px_rgba(0,0,0,0.2)]'
+              : 'bg-[color:var(--color-shell-control)]'
           }`}
         >
           {detectedReferences.length > 0 ? (
-            <div className="px-3.5 pt-2.5">
+            <div className="px-4 pt-3">
               <div className="flex flex-wrap gap-1.5">
                 {detectedReferences.map((reference) => (
                   <div
-                    className="rounded-full border border-white/8 bg-white/[0.04] px-2 py-0.5 text-[11px] text-neutral-300"
+                    className="rounded-full bg-white/[0.045] px-2.5 py-1 text-[11.5px] text-neutral-300"
                     key={reference}
                   >
                     @{reference}
@@ -405,11 +405,11 @@ export function ComposerDock(props: ComposerDockProps) {
           ) : null}
 
           {props.attachments.length > 0 ? (
-            <div className="px-3.5 pt-2.5">
+            <div className="px-4 pt-3">
               <div className="flex flex-wrap gap-2">
                 {props.attachments.map((attachment) => (
                   <div
-                    className="group relative overflow-hidden rounded-[12px] border border-white/8 bg-[#121214]"
+                    className="group relative overflow-hidden rounded-[14px] bg-[#15181d]"
                     key={attachment.id}
                   >
                     <img
@@ -435,14 +435,14 @@ export function ComposerDock(props: ComposerDockProps) {
             </div>
           ) : null}
 
-          <div className="flex min-h-[44px] items-center px-3.5 py-2.5">
+          <div className="flex min-h-[52px] items-center px-4 py-3">
             <textarea
               ref={textareaRef}
               value={draftPrompt}
               onChange={(event) => setDraftPrompt(event.currentTarget.value)}
               rows={1}
               placeholder="Ask anything, build anything..."
-              className="w-full resize-none border-none bg-transparent font-sans text-[15px] leading-[1.55] text-neutral-200 outline-none placeholder:text-neutral-500"
+              className="w-full resize-none border-none bg-transparent font-sans text-[15.5px] leading-[1.6] text-neutral-200 outline-none placeholder:text-neutral-500"
               style={{
                 minHeight: '20px',
                 maxHeight: '220px',
@@ -470,11 +470,11 @@ export function ComposerDock(props: ComposerDockProps) {
             />
           </div>
 
-          <div className="flex flex-wrap items-end justify-between gap-2.5 px-3.5 pb-2.5 pt-1">
+          <div className="flex flex-wrap items-end justify-between gap-3 px-4 pb-3 pt-1">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
               <button
                 type="button"
-                className="flex size-7 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-white/5 hover:text-neutral-200"
+                className="flex size-8 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-white/[0.05] hover:text-neutral-200"
                 title="Choose workspace"
                 onClick={props.onOpenProjectPicker}
               >
@@ -493,10 +493,10 @@ export function ComposerDock(props: ComposerDockProps) {
                     setShowReasoningMenu(false)
                     setShowGitBranchMenu(false)
                   }}
-                  className={`flex items-center gap-1.25 rounded-full px-1.75 py-1 text-[12.5px] font-medium transition-colors ${
+                  className={`flex h-8 items-center gap-1.25 rounded-full px-2.5 text-[12.5px] font-medium transition-colors ${
                     showModelMenu
-                      ? 'bg-white/5 text-white'
-                      : 'text-neutral-400 hover:bg-white/5 hover:text-white'
+                      ? 'bg-white/[0.06] text-white'
+                      : 'text-neutral-400 hover:bg-white/[0.05] hover:text-white'
                   }`}
                 >
                   {selectedModelOption?.display_name || props.selectedModel}
@@ -507,7 +507,7 @@ export function ComposerDock(props: ComposerDockProps) {
                   <div
                     role="menu"
                     aria-label="Select model"
-                    className="absolute bottom-full left-0 z-50 mb-2 rounded-[16px] border border-white/6 bg-[#1a1b1f] py-1.5 shadow-[0_24px_72px_rgba(0,0,0,0.46)]"
+                    className="absolute bottom-full left-0 z-50 mb-2 rounded-[18px] bg-[#171a1f] py-2 shadow-[var(--shadow-shell-elevated)]"
                     style={{
                       width: props.compactModelMenu ? 'min(calc(100vw - 2rem), 18.25rem)' : '11rem',
                       maxWidth: 'calc(100vw - 2rem)',
@@ -552,8 +552,8 @@ export function ComposerDock(props: ComposerDockProps) {
                               }}
                               className={`flex ${props.touchModelPreview ? 'h-[44px]' : 'h-[36px]'} w-full items-center justify-between rounded-[11px] px-3 text-left text-[14px] tracking-[-0.012em] transition-colors ${
                                 selected || active
-                                  ? 'bg-[#2a2c31] text-white'
-                                  : 'text-neutral-300 hover:bg-[#23252a] hover:text-white'
+                                  ? 'bg-[color:var(--color-shell-control)] text-white'
+                                  : 'text-neutral-300 hover:bg-[color:var(--color-shell-control)] hover:text-white'
                               }`}
                             >
                               <span>{model.display_name}</span>
@@ -561,7 +561,7 @@ export function ComposerDock(props: ComposerDockProps) {
                             </button>
 
                             {!props.compactModelMenu && active && description ? (
-                              <div className="pointer-events-none absolute left-full top-1/2 ml-2.5 -translate-y-1/2 whitespace-nowrap rounded-[10px] border border-white/8 bg-[#25272c] px-3 py-1.5 text-[13px] text-neutral-100 shadow-[0_16px_48px_rgba(0,0,0,0.45)]">
+                              <div className="pointer-events-none absolute left-full top-1/2 ml-2.5 -translate-y-1/2 whitespace-nowrap rounded-[12px] bg-[#20242a] px-3 py-1.5 text-[13px] text-neutral-100 shadow-[var(--shadow-shell-elevated)]">
                                 {description}
                               </div>
                             ) : null}
@@ -573,7 +573,7 @@ export function ComposerDock(props: ComposerDockProps) {
                     {props.compactModelMenu &&
                     activeModelIndex !== null &&
                     props.models[activeModelIndex]?.description.trim() ? (
-                      <div className="mx-2 mb-1 rounded-[11px] border border-white/7 bg-[#23252a] px-3 py-2 text-[13px] leading-[1.45] text-neutral-200">
+                      <div className="mx-2 mb-1 rounded-[12px] bg-[color:var(--color-shell-control)] px-3 py-2 text-[13px] leading-[1.45] text-neutral-200">
                         {props.models[activeModelIndex]?.description.trim()}
                       </div>
                     ) : null}
@@ -591,10 +591,10 @@ export function ComposerDock(props: ComposerDockProps) {
                     setShowModelMenu(false)
                     setShowGitBranchMenu(false)
                   }}
-                  className={`flex items-center gap-1.25 rounded-full px-1.75 py-1 text-[12.5px] font-medium transition-colors ${
+                  className={`flex h-8 items-center gap-1.25 rounded-full px-2.5 text-[12.5px] font-medium transition-colors ${
                     props.selectedReasoning !== (selectedModelOption?.default_reasoning_effort || 'medium')
-                      ? 'text-neutral-200 hover:bg-white/5 hover:text-white'
-                      : 'text-neutral-400 hover:bg-white/5 hover:text-neutral-200'
+                      ? 'text-neutral-200 hover:bg-white/[0.05] hover:text-white'
+                      : 'text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200'
                   }`}
                 >
                   <SparkleIcon className="h-3.25 w-3.25 opacity-80" />
@@ -603,7 +603,7 @@ export function ComposerDock(props: ComposerDockProps) {
                 </button>
 
                 {showReasoningMenu ? (
-                  <div className="absolute bottom-full left-0 z-50 mb-2 min-w-[224px] rounded-[13px] border border-white/5 bg-[#18181b] py-1 shadow-2xl">
+                  <div className="absolute bottom-full left-0 z-50 mb-2 min-w-[224px] rounded-[16px] bg-[#171a1f] py-1.5 shadow-[var(--shadow-shell-elevated)]">
                     {props.reasoningOptions.map((option) => (
                       <button
                         type="button"
@@ -618,8 +618,8 @@ export function ComposerDock(props: ComposerDockProps) {
                         disabled={option.disabled}
                         className={`flex w-full items-center justify-between px-3.5 py-2 text-[13px] transition-colors ${
                           props.selectedReasoning === option.value
-                            ? 'bg-white/5 text-white'
-                            : 'text-neutral-400 hover:bg-white/5 hover:text-white'
+                            ? 'bg-[color:var(--color-shell-control)] text-white'
+                            : 'text-neutral-400 hover:bg-[color:var(--color-shell-control)] hover:text-white'
                         } ${option.disabled ? 'cursor-not-allowed opacity-45' : ''}`}
                       >
                         <span className="min-w-0">
@@ -642,7 +642,7 @@ export function ComposerDock(props: ComposerDockProps) {
                   type="button"
                   onClick={props.onInterrupt}
                   disabled={props.busy}
-                  className="rounded-full border border-white/8 px-2.25 py-1 text-[11.5px] font-medium text-neutral-400 transition hover:border-white/15 hover:text-neutral-200 disabled:opacity-70"
+                  className="rounded-full bg-white/[0.045] px-2.75 py-1.5 text-[11.5px] font-medium text-neutral-300 transition hover:bg-white/[0.065] hover:text-neutral-100 disabled:opacity-70"
                 >
                   Interrupt
                 </button>
@@ -653,10 +653,10 @@ export function ComposerDock(props: ComposerDockProps) {
               type="button"
               onClick={() => props.onSubmit(draftPrompt)}
               disabled={!canSubmit || props.busy}
-              className={`flex size-7 items-center justify-center rounded-full transition-all duration-200 ${
+              className={`flex size-9 items-center justify-center rounded-full transition-all duration-200 ${
                 canSubmit
                   ? 'bg-white text-black hover:scale-105 hover:bg-neutral-200'
-                  : 'cursor-not-allowed bg-white/5 text-neutral-500'
+                  : 'cursor-not-allowed bg-white/[0.05] text-neutral-500'
               }`}
             >
               <ArrowUpIcon className="h-3.5 w-3.5" />
@@ -664,7 +664,7 @@ export function ComposerDock(props: ComposerDockProps) {
           </div>
         </div>
 
-        <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 px-0.5">
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 px-1">
           <div className="relative" ref={continueRef}>
             <button
               type="button"
@@ -683,7 +683,7 @@ export function ComposerDock(props: ComposerDockProps) {
             </button>
 
             {showContinueMenu ? (
-              <div className="absolute bottom-full left-0 z-50 mb-2 w-[256px] rounded-[20px] border border-white/6 bg-[#2a2a2d] py-2.5 shadow-[0_24px_80px_rgba(0,0,0,0.42)] backdrop-blur-sm">
+              <div className="absolute bottom-full left-0 z-50 mb-2 w-[256px] rounded-[18px] bg-[#181b20] py-2.5 shadow-[var(--shadow-shell-elevated)] backdrop-blur-sm">
                 <div className="px-4 pb-1.5 text-[12.5px] font-medium tracking-[-0.015em] text-neutral-400">
                   Continue in
                 </div>
@@ -693,7 +693,7 @@ export function ComposerDock(props: ComposerDockProps) {
                   onClick={() => {
                     setShowContinueMenu(false)
                   }}
-                  className="flex w-full items-center gap-3 px-4 py-2.25 text-left text-[13px] text-white transition-colors hover:bg-white/5"
+                  className="flex w-full items-center gap-3 px-4 py-2.25 text-left text-[13px] text-white transition-colors hover:bg-[color:var(--color-shell-control)]"
                 >
                   <MonitorIcon className="h-3.5 w-3.5 text-neutral-300" />
                   <span className="flex-1 font-medium">Local project</span>
@@ -719,7 +719,7 @@ export function ComposerDock(props: ComposerDockProps) {
                   <span className="flex-1 font-medium">Send to cloud</span>
                 </button>
 
-                <div className="mx-4 my-2 h-px bg-white/8" />
+                <div className="mx-4 my-2 h-px bg-[color:var(--color-shell-divider)]" />
 
                 <button
                   type="button"
@@ -727,7 +727,7 @@ export function ComposerDock(props: ComposerDockProps) {
                     props.onOpenRateLimits()
                     setShowContinueMenu(false)
                   }}
-                  className="flex w-full items-center gap-3 px-4 py-2.25 text-left text-[13px] text-neutral-200 transition-colors hover:bg-white/5 hover:text-white"
+                  className="flex w-full items-center gap-3 px-4 py-2.25 text-left text-[13px] text-neutral-200 transition-colors hover:bg-[color:var(--color-shell-control)] hover:text-white"
                 >
                   <GaugeIcon className="h-3.5 w-3.5 text-neutral-300" />
                   <span className="flex-1 font-medium">Open rate limits</span>
@@ -754,14 +754,14 @@ export function ComposerDock(props: ComposerDockProps) {
               </button>
 
               {showGitBranchMenu ? (
-                <div className="absolute bottom-full left-0 z-50 mb-2 w-[19rem] rounded-[18px] border border-white/6 bg-[#1a1a1d] p-3 shadow-[0_24px_80px_rgba(0,0,0,0.46)]">
+                <div className="absolute bottom-full left-0 z-50 mb-2 w-[19rem] rounded-[18px] bg-[#171a1f] p-3 shadow-[var(--shadow-shell-elevated)]">
                   <div className="relative">
                     <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-500" />
                     <input
                       value={gitBranchQuery}
                       onChange={(event) => setGitBranchQuery(event.target.value)}
                       placeholder="Search branches"
-                      className="w-full rounded-[12px] border border-white/7 bg-black/20 py-2 pl-9 pr-3 text-[13px] text-neutral-100 placeholder:text-neutral-600 focus:border-white/12 focus:outline-none"
+                      className="h-10 w-full rounded-[12px] bg-black/18 py-2 pl-9 pr-3 text-[13px] text-neutral-100 placeholder:text-neutral-600 focus:bg-black/24 focus:outline-none"
                     />
                   </div>
 
@@ -779,8 +779,8 @@ export function ComposerDock(props: ComposerDockProps) {
                           onClick={() => void handleCheckoutGitBranch(branch.name)}
                           className={`w-full rounded-[12px] px-3 py-2.5 text-left transition ${
                             branch.is_current
-                              ? 'bg-white/[0.07] text-white'
-                              : 'text-neutral-300 hover:bg-white/[0.05] hover:text-white'
+                              ? 'bg-[color:var(--color-shell-control)] text-white'
+                              : 'text-neutral-300 hover:bg-[color:var(--color-shell-control)] hover:text-white'
                           } ${props.gitBusy ? 'cursor-not-allowed opacity-60' : ''}`}
                         >
                           <div className="flex items-center justify-between gap-3 text-[13px] font-medium">
@@ -800,18 +800,18 @@ export function ComposerDock(props: ComposerDockProps) {
                         </button>
                       ))
                     ) : (
-                      <div className="rounded-[12px] border border-dashed border-white/8 px-3 py-3 text-[12.5px] text-neutral-500">
+                      <div className="rounded-[12px] bg-[color:var(--color-shell-control)] px-3 py-3 text-[12.5px] text-neutral-500">
                         No branches match.
                       </div>
                     )}
                   </div>
 
-                  <div className="mt-3 border-t border-white/6 pt-3">
+                  <div className="mt-3 pt-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
                     <button
                       type="button"
                       disabled={props.gitBusy || !canCreateGitBranch}
                       onClick={() => void handleCreateGitBranch()}
-                      className="flex w-full items-center gap-2 rounded-[12px] px-3 py-2.5 text-left text-[13px] font-medium text-neutral-200 transition hover:bg-white/[0.05] hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                      className="flex w-full items-center gap-2 rounded-[12px] px-3 py-2.5 text-left text-[13px] font-medium text-neutral-200 transition hover:bg-[color:var(--color-shell-control)] hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
                     >
                       <PlusIcon className="h-3.5 w-3.5 text-neutral-400" />
                       <span className="truncate">
@@ -852,7 +852,7 @@ export function ComposerDock(props: ComposerDockProps) {
             </button>
 
             {showPermissionMenu ? (
-              <div className="absolute bottom-full left-0 z-50 mb-2 min-w-[220px] rounded-[16px] border border-white/6 bg-[#262629] py-1.5 shadow-[0_20px_70px_rgba(0,0,0,0.4)]">
+              <div className="absolute bottom-full left-0 z-50 mb-2 min-w-[220px] rounded-[16px] bg-[#171a1f] py-1.5 shadow-[var(--shadow-shell-elevated)]">
                 {props.permissionOptions.map((option) => (
                   <button
                     type="button"
@@ -864,7 +864,7 @@ export function ComposerDock(props: ComposerDockProps) {
                     className={`flex w-full items-center gap-3 px-4 py-2.25 text-left text-[13px] transition-colors ${
                       props.selectedPermissionPreset === option.value
                         ? 'text-white'
-                        : 'text-neutral-300 hover:bg-white/5 hover:text-white'
+                        : 'text-neutral-300 hover:bg-[color:var(--color-shell-control)] hover:text-white'
                     }`}
                   >
                     {option.value === 'full-access' ? (

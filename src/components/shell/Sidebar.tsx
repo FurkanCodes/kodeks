@@ -5,7 +5,6 @@ import { LoadingSpinner } from './LoadingSpinner'
 import {
   ArchiveIcon,
   ChevronIcon,
-  ClockIcon,
   FolderGitIcon,
   FolderOpenIcon,
   FolderPlusIcon,
@@ -32,6 +31,7 @@ export type SidebarAccount = {
 
 type SidebarProps = {
   collapsed: boolean
+  activeUtility?: 'plugins' | 'skills' | null
   groups: SidebarGroup[]
   archivedThreads: SidebarThread[]
   accountMenuOpen: boolean
@@ -42,7 +42,6 @@ type SidebarProps = {
   onNewThread: (rootPath?: string | null) => void
   onSearch: () => void
   onOpenPlugins: () => void
-  onOpenAutomations: () => void
   onSelectProject: (rootPath: string) => void
   onSelectThread: (threadId: string) => void
   onArchiveThread: (threadId: string) => void
@@ -186,6 +185,7 @@ const THREAD_ROW_LAYOUT_TRANSITION = {
 function SidebarUtilityButton(props: {
   label: string
   icon: typeof SquarePenIcon
+  active?: boolean
   onClick?: () => void
 }) {
   const Icon = props.icon
@@ -194,10 +194,18 @@ function SidebarUtilityButton(props: {
     <button
       type="button"
       onClick={props.onClick}
-      className="flex h-8 w-full items-center gap-2.5 rounded-[10px] px-3 text-left text-[color:var(--color-shell-text)] transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]"
+      className={`flex h-10 w-full items-center gap-3 rounded-[12px] px-3.5 text-left transition ${
+        props.active
+          ? 'bg-[color:var(--color-shell-control)] text-[color:var(--color-shell-primary)]'
+          : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
+      }`}
     >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-[color:var(--color-shell-faint)]" />
-      <span className="text-[13.5px] font-medium tracking-[-0.018em]">{props.label}</span>
+      <Icon
+        className={`h-3.5 w-3.5 shrink-0 ${
+          props.active ? 'text-[color:var(--color-shell-primary)]' : 'text-[color:var(--color-shell-faint)]'
+        }`}
+      />
+      <span className="text-[14px] font-semibold tracking-[-0.018em]">{props.label}</span>
     </button>
   )
 }
@@ -213,7 +221,7 @@ function HeaderIconButton(props: {
     <button
       type="button"
       title={props.label}
-      className="flex size-7 items-center justify-center rounded-[8px] text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
+      className="flex size-8 items-center justify-center rounded-[10px] text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]"
       onClick={props.onClick}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" />
@@ -234,14 +242,14 @@ function RailIconButton(props: {
       type="button"
       title={props.label}
       onClick={props.onClick}
-      className={`relative flex size-11 items-center justify-center rounded-[13px] transition ${
+      className={`relative flex size-10 items-center justify-center rounded-[12px] transition ${
         props.active
-          ? 'bg-[color:var(--color-shell-elevated)] text-[color:var(--color-shell-primary)]'
-          : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]'
+          ? 'bg-[color:var(--color-shell-control)] text-[color:var(--color-shell-primary)]'
+          : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
       }`}
     >
       {props.active ? (
-        <span className="absolute left-0 top-1/2 h-5 w-px -translate-y-1/2 bg-[color:var(--color-shell-primary)]" />
+        <span className="absolute left-1 top-1/2 h-4 w-1 -translate-y-1/2 rounded-full bg-[color:var(--color-shell-primary)]" />
       ) : null}
       <Icon className="h-4 w-4" />
     </button>
@@ -260,12 +268,12 @@ function FlyoutButton(props: {
   return (
     <button
       type="button"
-      className={`group flex w-full items-center justify-between px-3 py-1.5 text-[12px] transition-colors ${
+      className={`group flex w-full items-center justify-between rounded-[10px] px-3.5 py-2 text-[12.5px] transition-colors ${
         props.disabled
           ? 'cursor-default text-[color:var(--color-shell-faint)] opacity-80'
           : props.danger
             ? 'text-[color:var(--color-shell-muted)] hover:bg-red-500/10 hover:text-[color:var(--color-shell-primary)]'
-            : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]'
+            : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
       }`}
       onClick={props.onClick}
       disabled={props.disabled}
@@ -301,12 +309,12 @@ function AccountFlyout(props: {
 
   return (
     <div
-      className={`absolute z-50 rounded-[13px] border border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-elevated)] py-1 shadow-[var(--shadow-shell-elevated)] ${
+      className={`absolute z-50 rounded-[16px] bg-[color:var(--color-shell-elevated-strong)] py-1.5 shadow-[var(--shadow-shell-elevated)] ${
         props.collapsed ? 'bottom-2 left-full ml-2 w-[206px]' : 'bottom-full left-2.5 mb-2 w-[206px]'
       }`}
     >
-      <div className="mb-1 px-3 py-2">
-        <div className="truncate text-[13px] font-medium text-[color:var(--color-shell-primary)]">{activeAccount.label}</div>
+      <div className="mb-1 px-3.5 py-2.5">
+        <div className="truncate text-[13.5px] font-semibold text-[color:var(--color-shell-primary)]">{activeAccount.label}</div>
         <div className="text-[11.5px] text-[color:var(--color-shell-faint)]">{activeAccount.planLabel}</div>
         {switchingAccount ? (
           <div className="mt-1.5 flex items-center gap-1.5 text-[10.5px] text-[color:var(--color-shell-text)]">
@@ -321,24 +329,20 @@ function AccountFlyout(props: {
       </div>
 
       {switchableAccounts.length > 0 ? (
-        <div className="mb-1 space-y-0.5 px-3 py-1">
-          <div className="px-0.5 text-[10px] font-semibold uppercase tracking-[0.11em] text-[color:var(--color-shell-faint)]">
+        <div className="mb-1 space-y-1 px-3.5 py-1">
+          <div className="px-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--color-shell-faint)]">
             Switch account
           </div>
           {switchableAccounts.map((account) => (
             <button
               key={account.id}
               type="button"
-              className={`flex w-full items-center justify-between rounded-[7px] px-2.5 py-1.5 text-left text-[11.5px] transition ${
+              className={`flex w-full items-center justify-between rounded-[10px] px-3 py-2 text-left text-[12px] transition ${
                 props.signOutDisabled
                   ? 'cursor-not-allowed text-[color:var(--color-shell-faint)]'
-                  : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]'
+                  : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
               }`}
               onClick={() => {
-                console.info('[kodeks-account-ui] sidebar switch click', {
-                  requestedAccountId: account.id,
-                  label: account.label,
-                })
                 props.onSelectAccount(account.id)
               }}
               disabled={props.signOutDisabled}
@@ -374,7 +378,7 @@ function AccountFlyout(props: {
         onClick={props.onOpenSettings}
       />
 
-      <div className="mx-3 my-1.5 h-px bg-[color:var(--color-shell-border)]" />
+      <div className="mx-3.5 my-1.5 h-px bg-[color:var(--color-shell-divider)]" />
 
       <FlyoutButton
         label="Sign out current"
@@ -396,7 +400,7 @@ function MenuSurface(props: { children: ReactNode }) {
       animate="visible"
       exit="hidden"
       variants={prefersReducedMotion ? THREAD_MENU_REDUCED_VARIANTS : THREAD_MENU_VARIANTS}
-      className="absolute right-0 top-full z-40 mt-1 min-w-[164px] rounded-[11px] border border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-elevated)] p-1 shadow-[var(--shadow-shell-elevated)]"
+      className="absolute right-0 top-full z-40 mt-1 min-w-[172px] rounded-[14px] bg-[color:var(--color-shell-elevated-strong)] p-1.5 shadow-[var(--shadow-shell-elevated)]"
       style={prefersReducedMotion ? undefined : { transformOrigin: 'top right', willChange: 'opacity, transform' }}
     >
       {props.children}
@@ -415,10 +419,10 @@ function MenuButton(props: {
   return (
     <button
       type="button"
-      className={`flex w-full items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-[11.5px] transition ${
+      className={`flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-[12.5px] transition ${
         props.danger
           ? 'text-red-200/80 hover:bg-red-500/10 hover:text-red-100'
-          : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]'
+          : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
       }`}
       onClick={props.onClick}
     >
@@ -560,9 +564,9 @@ export function Sidebar(props: SidebarProps) {
   if (props.collapsed) {
     return (
       <LazyMotion features={domAnimation}>
-        <aside className="relative flex h-full w-[72px] shrink-0 flex-col items-center border-r border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-panel)] py-3 transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+        <aside className="relative flex h-full w-[72px] shrink-0 flex-col items-center bg-[color:var(--color-shell-panel)] py-3 shadow-[inset_-1px_0_0_rgba(255,255,255,0.035)] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
           <div className="flex flex-col items-center gap-2">
-            <div className="flex size-11 items-center justify-center rounded-[14px] border border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-elevated)]">
+            <div className="flex size-10 items-center justify-center rounded-[12px] bg-[color:var(--color-shell-control)]">
               <span className="text-[11px] font-bold leading-none text-[color:var(--color-shell-primary)]">◆</span>
             </div>
             <RailIconButton label="Add project" icon={PlusIcon} onClick={props.onAddProject} />
@@ -604,24 +608,24 @@ export function Sidebar(props: SidebarProps) {
 
   return (
     <LazyMotion features={domAnimation}>
-      <aside className="relative flex h-full w-[296px] shrink-0 flex-col border-r border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-panel)] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
-        <div className="space-y-0.5 px-2.5 pb-3 pt-3">
+      <aside className="relative flex h-full w-[304px] shrink-0 flex-col bg-[color:var(--color-shell-panel)] shadow-[inset_-1px_0_0_rgba(255,255,255,0.035)] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+        <div className="space-y-1 px-3 pb-3 pt-4">
           <SidebarUtilityButton
             label="New chat"
             icon={SquarePenIcon}
             onClick={() => props.onNewThread(activeProjectRoot)}
           />
           <SidebarUtilityButton label="Search" icon={SearchIcon} onClick={props.onSearch} />
-          <SidebarUtilityButton label="Plugins" icon={PuzzleIcon} onClick={props.onOpenPlugins} />
           <SidebarUtilityButton
-            label="Skills"
-            icon={ClockIcon}
-            onClick={props.onOpenAutomations}
+            label="Plugins"
+            icon={PuzzleIcon}
+            active={Boolean(props.activeUtility)}
+            onClick={props.onOpenPlugins}
           />
         </div>
 
-      <div className="flex items-center justify-between px-3.5 pb-2.5 pt-4">
-        <span className="text-[13px] font-medium tracking-[-0.015em] text-[color:var(--color-shell-faint)]">Threads</span>
+      <div className="flex items-center justify-between px-4 pb-2.5 pt-4">
+        <span className="text-[12.5px] font-semibold tracking-[0.01em] text-[color:var(--color-shell-faint)]">Threads</span>
         <div className="flex items-center gap-1">
           <HeaderIconButton label="Add project" icon={FolderPlusIcon} onClick={props.onAddProject} />
           <HeaderIconButton
@@ -632,8 +636,8 @@ export function Sidebar(props: SidebarProps) {
         </div>
       </div>
 
-      <div className="shell-scroll-none flex-1 overflow-y-auto px-2.5 pb-3">
-        <div className="space-y-2.5">
+      <div className="shell-scroll-none flex-1 overflow-y-auto px-3 pb-3">
+        <div className="space-y-3">
           {visibleGroups.map((group) => {
             const groupExpanded = group.expanded
             const threadsExpanded = expandedThreadGroups[group.key] ?? false
@@ -649,15 +653,15 @@ export function Sidebar(props: SidebarProps) {
             }
 
             return (
-              <section className="space-y-0.5" key={group.key}>
+              <section className="space-y-1" key={group.key}>
                 <div className="group relative flex items-center justify-between gap-2 px-1.5">
                   <button
                     type="button"
                     aria-expanded={hasThreads ? groupExpanded : undefined}
-                    className={`flex min-w-0 flex-1 items-center gap-1 rounded-[8px] px-1.5 py-0.5 text-left transition ${
+                    className={`flex min-w-0 flex-1 items-center gap-2 rounded-[10px] px-2 py-1.5 text-left transition ${
                       group.active
-                        ? 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-sidebar-accent)]'
-                        : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]'
+                        ? 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-shell-control)]'
+                        : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]'
                     }`}
                     onClick={() => {
                       if (hasThreads) {
@@ -674,13 +678,10 @@ export function Sidebar(props: SidebarProps) {
                         : group.rootPath || group.label
                     }
                   >
-                    <span
-                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[7px] text-[color:var(--color-shell-faint)]"
-                      aria-hidden="true"
-                    >
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[color:var(--color-shell-faint)]" aria-hidden="true">
                       <FolderGitIcon className="h-3.5 w-3.5 shrink-0" />
                     </span>
-                    <span className="min-w-0 truncate text-[13px] font-medium tracking-[-0.018em]">
+                    <span className="min-w-0 truncate text-[13.5px] font-semibold tracking-[-0.02em]">
                       {group.label}
                     </span>
                   </button>
@@ -696,7 +697,7 @@ export function Sidebar(props: SidebarProps) {
                       <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                         <button
                           type="button"
-                          className="rounded p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
+                          className="rounded-[8px] p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
                           onClick={(event) => {
                             event.stopPropagation()
                             props.onNewThread(group.rootPath)
@@ -707,7 +708,7 @@ export function Sidebar(props: SidebarProps) {
                         </button>
                         <button
                           type="button"
-                          className="rounded p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
+                          className="rounded-[8px] p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
                           onClick={(event) => {
                             event.stopPropagation()
                             setProjectMenuKey((current) => (current === group.key ? null : group.key))
@@ -766,8 +767,8 @@ export function Sidebar(props: SidebarProps) {
                 </div>
 
                 {hasThreads ? (
-                  <CollapsibleBody open={groupExpanded} className="pl-5 pt-px">
-                    <div className="space-y-px">
+                  <CollapsibleBody open={groupExpanded} className="pl-5 pt-0.5">
+                    <div className="space-y-1">
                       <AnimatePresence initial={false} mode="popLayout">
                         {visibleThreads.map((thread, index) => (
                           <ThreadRowMotion rowKey={thread.id} index={index} className="group/row relative" key={thread.id}>
@@ -776,10 +777,10 @@ export function Sidebar(props: SidebarProps) {
                               type="button"
                               whileTap={prefersReducedMotion ? undefined : { scale: 0.985 }}
                               transition={THREAD_ROW_LAYOUT_TRANSITION}
-                              className={`flex min-h-[26px] w-full items-center gap-2 rounded-[10px] px-3 py-0.5 text-left transition-[background-color,color,box-shadow,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                              className={`flex min-h-[32px] w-full items-center gap-2.5 rounded-[12px] px-3.5 py-1.5 text-left transition-[background-color,color,box-shadow,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${
                                 thread.active
-                                  ? 'bg-[color:var(--color-shell-elevated)] text-[color:var(--color-shell-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]'
-                                  : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)]'
+                                  ? 'bg-[color:var(--color-shell-control)] text-[color:var(--color-shell-primary)]'
+                                  : 'text-[color:var(--color-shell-text)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
                               }`}
                               onClick={() => props.onSelectThread(thread.id)}
                               title={
@@ -788,7 +789,7 @@ export function Sidebar(props: SidebarProps) {
                                   : thread.label
                               }
                             >
-                              <span className="min-w-0 flex-1 truncate pr-12 text-[13px] font-medium tracking-[-0.018em]">
+                              <span className="min-w-0 flex-1 truncate pr-12 text-[13.5px] font-medium tracking-[-0.018em]">
                                 {thread.label}
                               </span>
                               <span
@@ -805,7 +806,7 @@ export function Sidebar(props: SidebarProps) {
                             <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
                               <button
                                 type="button"
-                                className="pointer-events-auto rounded p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
+                                className="pointer-events-auto rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
                                 onClick={(event) => {
                                   event.stopPropagation()
                                   setThreadMenuId((current) => (current === thread.id ? null : thread.id))
@@ -838,7 +839,7 @@ export function Sidebar(props: SidebarProps) {
                       {hasOverflow ? (
                         <button
                           type="button"
-                          className="px-3 py-0.5 text-[13px] font-medium tracking-[-0.018em] text-[color:var(--color-shell-muted)] transition hover:text-[color:var(--color-shell-text)]"
+                          className="px-3.5 py-0.5 text-[13px] font-medium tracking-[-0.018em] text-[color:var(--color-shell-muted)] transition hover:text-[color:var(--color-shell-text)]"
                           onClick={() =>
                             setExpandedThreadGroups((current) => ({
                               ...current,
@@ -860,7 +861,7 @@ export function Sidebar(props: SidebarProps) {
             <section className="space-y-1.5 pt-1">
               <button
                 type="button"
-                className="flex w-full items-center justify-between px-1.5 text-left text-[color:var(--color-shell-muted)] transition hover:text-[color:var(--color-shell-text)]"
+                className="flex w-full items-center justify-between rounded-[10px] px-2 py-1 text-left text-[color:var(--color-shell-muted)] transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
                 onClick={() => setArchivedExpanded((value) => !value)}
               >
                 <div className="flex items-center gap-1.5">
@@ -873,14 +874,14 @@ export function Sidebar(props: SidebarProps) {
               </button>
 
               <CollapsibleBody open={archivedExpanded} className="pl-4.5 pt-0.5">
-                <div className="space-y-0.5">
+                <div className="space-y-1">
                   <AnimatePresence initial={false} mode="popLayout">
                     {props.archivedThreads.map((thread, index) => (
                       <ThreadRowMotion rowKey={thread.id} index={index} className="group/row relative" key={thread.id}>
                         <m.div
                           layout
                           transition={THREAD_ROW_LAYOUT_TRANSITION}
-                          className="flex min-h-[28px] items-center gap-2 rounded-[10px] px-3 py-1 text-[color:var(--color-shell-muted)] transition-[background-color,color,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
+                          className="flex min-h-[32px] items-center gap-2.5 rounded-[12px] px-3.5 py-1.5 text-[color:var(--color-shell-muted)] transition-[background-color,color,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
                         >
                           <span className="min-w-0 flex-1 truncate pr-12 text-[13.5px] font-medium tracking-[-0.018em]">
                             {thread.label}
@@ -893,7 +894,7 @@ export function Sidebar(props: SidebarProps) {
                         <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
                           <button
                             type="button"
-                            className="pointer-events-auto rounded p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
+                            className="pointer-events-auto rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
                             onClick={() => props.onUnarchiveThread(thread.id)}
                             title="Restore thread"
                           >
@@ -928,11 +929,11 @@ export function Sidebar(props: SidebarProps) {
           <button
             type="button"
             onClick={props.onToggleAccountMenu}
-            className="flex h-[34px] w-full items-center justify-between rounded-[9px] px-3 text-[color:var(--color-shell-muted)] transition-colors hover:bg-[color:var(--color-sidebar-accent)] hover:text-[color:var(--color-shell-text)]"
+            className="flex h-10 w-full items-center justify-between rounded-[12px] px-3.5 text-[color:var(--color-shell-muted)] transition-colors hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
           >
             <div className="flex items-center gap-2.5">
               <SettingsIcon className="h-3.5 w-3.5" />
-              <span className="text-[13px]">Settings</span>
+              <span className="text-[14px] font-medium">Settings</span>
             </div>
           </button>
         </div>

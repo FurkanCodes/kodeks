@@ -1001,8 +1001,8 @@ function ChangeReceiptCard(props: {
   const firstFile = props.receipt.files[0]?.path
 
   return (
-    <section className="mt-3.5 overflow-hidden rounded-[16px] border border-white/6 bg-white/[0.03]">
-      <div className="flex items-center gap-2 border-b border-white/5 bg-white/[0.02] px-3.5 py-2.5">
+    <section className="mt-3.5 overflow-hidden rounded-[16px] bg-[color:var(--color-shell-control)]">
+      <div className="flex items-center gap-2 bg-white/[0.02] px-3.5 py-2.5 shadow-[inset_0_-1px_0_rgba(255,255,255,0.035)]">
         <span className="text-[12px] font-medium text-neutral-100">
           {fileCount} {fileCount === 1 ? 'file' : 'files'} changed
         </span>
@@ -1011,7 +1011,7 @@ function ChangeReceiptCard(props: {
         {firstFile && props.onOpenChangeReference ? (
           <button
             type="button"
-            className="ml-auto rounded-full border border-white/8 px-2.5 py-1 text-[11.5px] font-medium text-neutral-300 transition hover:border-white/16 hover:text-white"
+            className="ml-auto rounded-full bg-[color:var(--color-shell-control)] px-2.5 py-1 text-[11.5px] font-medium text-neutral-300 transition hover:bg-[color:var(--color-shell-control-hover)] hover:text-white"
             onClick={() => props.onOpenChangeReference?.(firstFile)}
           >
             Open changes
@@ -1021,10 +1021,7 @@ function ChangeReceiptCard(props: {
 
       <div>
         {props.receipt.files.map((file) => (
-          <div
-            className="group/row flex items-center gap-3 border-t border-white/5 px-3.5 py-2 first:border-t-0"
-            key={file.path}
-          >
+          <div className="group/row flex items-center gap-3 px-3.5 py-2 first:border-t-0" key={file.path}>
             <div className="min-w-0 flex-1">
               <button
                 type="button"
@@ -1316,7 +1313,7 @@ function AnimatedSuggestionCard(props: {
       onPointerMove={handlePointerMove}
       onPointerLeave={resetTilt}
       onPointerCancel={resetTilt}
-      className="group relative flex min-h-[116px] flex-col overflow-hidden rounded-[22px] border border-white/7 bg-white/[0.04] px-4 py-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-[border-color,background-color,box-shadow] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] hover:border-white/12 hover:bg-white/[0.055] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_12px_28px_rgba(0,0,0,0.18)]"
+      className="group relative flex min-h-[116px] flex-col overflow-hidden rounded-[22px] bg-[color:var(--color-shell-control)] px-4 py-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.025)] transition-[background-color,box-shadow] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] hover:bg-[color:var(--color-shell-control-hover)] hover:shadow-[0_12px_28px_rgba(0,0,0,0.16)]"
       style={
         prefersReducedMotion
           ? undefined
@@ -1337,8 +1334,8 @@ function AnimatedSuggestionCard(props: {
       <div className="relative flex items-start justify-between gap-3 [transform:translateZ(18px)]">
         <m.div
           variants={SUGGESTION_ICON_VARIANTS}
-          className="flex h-9 w-9 items-center justify-center rounded-[12px] border border-white/9 bg-white/[0.05] text-neutral-100 transition-[border-color,background-color] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] group-hover:border-white/14 group-hover:bg-white/[0.075]"
-        >
+        className="flex h-9 w-9 items-center justify-center rounded-[12px] bg-white/[0.045] text-neutral-100 transition-[background-color] duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] group-hover:bg-white/[0.07]"
+      >
           {props.icon}
         </m.div>
         <m.div variants={SUGGESTION_CHEVRON_VARIANTS} className="mt-1 shrink-0">
@@ -1401,7 +1398,7 @@ function EmptyState(props: {
         >
           <section className="flex w-full justify-center pb-10 text-center">
             <div className="flex flex-col items-center self-center">
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
+              <div className="inline-flex items-center gap-2 rounded-full bg-[color:var(--color-shell-control)] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                 <FolderOpenIcon className="h-3.5 w-3.5 text-neutral-300" />
                 <span>{props.emptyState?.eyebrow || 'Project'}</span>
                 {projectLabel ? (
@@ -1425,14 +1422,14 @@ function EmptyState(props: {
                   {props.emptyState?.title || 'Start a new thread'}
                 </h1>
                 {props.emptyState?.description ? (
-                  <p className="mt-4 text-[13px] leading-[1.65] tracking-[-0.015em] text-neutral-500">
+                  <p className="mt-4 text-[14px] leading-[1.7] tracking-[-0.015em] text-neutral-500">
                     {props.emptyState.description}
                   </p>
                 ) : null}
               </div>
 
               {props.liveStatus ? (
-                <div className="mt-7 w-full max-w-[24rem] rounded-[16px] border border-white/6 bg-white/[0.025] px-4 py-3.5">
+                <div className="mt-7 w-full max-w-[24rem] rounded-[16px] bg-[color:var(--color-shell-control)] px-4 py-3.5">
                   <LiveStatusRow status={props.liveStatus} />
                 </div>
               ) : null}

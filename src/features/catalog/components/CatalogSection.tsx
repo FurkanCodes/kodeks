@@ -3,19 +3,20 @@ import type { CatalogSectionView } from '../selectors'
 
 type CatalogSectionProps<T> = {
   section: CatalogSectionView<T>
+  columns?: 1 | 2
   renderCard: (item: T) => ReactNode
 }
 
 export function CatalogSection<T>(props: CatalogSectionProps<T>) {
   return (
-    <section>
-      <div className="mb-4 flex items-center justify-between gap-3">
+    <section className="space-y-5">
+      <div className="flex items-center gap-4">
         <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-[color:var(--color-shell-primary)]">
           {props.section.label}
         </h2>
-        <div className="h-px flex-1 bg-white/5" />
+        <div className="h-px flex-1 bg-[color:var(--color-shell-divider)]" />
       </div>
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+      <div className={`grid grid-cols-1 gap-x-12 gap-y-3 ${props.columns === 2 ? 'xl:grid-cols-2' : ''}`}>
         {props.section.items.map((item) => props.renderCard(item))}
       </div>
     </section>
@@ -28,8 +29,8 @@ export function CatalogPanelState(props: {
   action?: ReactNode
 }) {
   return (
-    <div className="flex min-h-[280px] flex-col items-center justify-center rounded-[20px] border border-dashed border-white/8 bg-white/[0.02] px-6 text-center">
-      <div className="text-[16px] font-medium tracking-[-0.02em] text-[color:var(--color-shell-primary)]">
+    <div className="flex min-h-[240px] flex-col items-center justify-center rounded-[24px] bg-[color:var(--color-shell-control)] px-6 text-center">
+      <div className="text-[17px] font-medium tracking-[-0.03em] text-[color:var(--color-shell-primary)]">
         {props.title}
       </div>
       <div className="mt-2 max-w-md text-[13px] leading-6 text-[color:var(--color-shell-muted)]">

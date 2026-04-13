@@ -24,7 +24,7 @@ import {
 import { LoadingSpinner } from './components/shell/LoadingSpinner'
 import { Sidebar, type SidebarAccount } from './components/shell/Sidebar'
 import { TopBar, type TopBarRunState } from './components/shell/TopBar'
-import { CatalogModal } from './features/catalog/CatalogModal'
+import { CatalogWorkspace } from './features/catalog/CatalogWorkspace'
 import type { CatalogTab } from './features/catalog/models'
 import {
   archiveThread,
@@ -351,8 +351,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSearch, setSettingsSearch] = useState('')
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionKey>('account')
-  const [catalogOpen, setCatalogOpen] = useState(false)
-  const [catalogInitialTab, setCatalogInitialTab] = useState<CatalogTab>('plugins')
+  const [activeCatalogTab, setActiveCatalogTab] = useState<CatalogTab | null>(null)
   const [panelMode, setPanelMode] = useState<PanelMode>(null)
   const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null)
   const [selectedCodePath, setSelectedCodePath] = useState<string | null>(null)
@@ -488,16 +487,22 @@ function App() {
   const gitCanPush = Boolean(projectGit?.branch.current && !projectGit.branch.detached && projectGit.branch.ahead > 0)
 
   const threadViewKey = useMemo(() => {
+    if (activeCatalogTab) {
+      return `catalog:${currentProjectRoot}`
+    }
     if (activeProjectViewRoot) {
       return `project:${activeProjectViewRoot}`
     }
 
     return `thread:${activeThread?.id || snapshot.active_thread_id || 'empty'}`
-  }, [activeProjectViewRoot, activeThread?.id, snapshot.active_thread_id])
+  }, [activeCatalogTab, activeProjectViewRoot, activeThread?.id, currentProjectRoot, snapshot.active_thread_id])
 
   const pendingApprovals = useMemo(
-    () => (activeProjectViewRoot ? [] : snapshot.approvals.filter((approval) => approval.status === 'pending')),
-    [activeProjectViewRoot, snapshot.approvals],
+    () =>
+      activeProjectViewRoot || activeCatalogTab
+        ? []
+        : snapshot.approvals.filter((approval) => approval.status === 'pending'),
+    [activeCatalogTab, activeProjectViewRoot, snapshot.approvals],
   )
 
   const threadParsedDiffFiles = useMemo(
@@ -679,7 +684,8 @@ function App() {
     [snapshot.archived_threads],
   )
 
-  const effectivePanelMode = panelMode ?? (pendingApprovals.length > 0 && !dismissedApprovals ? 'approvals' : null)
+  const effectivePanelMode =
+    activeCatalogTab ? null : panelMode ?? (pendingApprovals.length > 0 && !dismissedApprovals ? 'approvals' : null)
   const inspectorAsOverlay = viewportWidth < 1320
   const compactModelMenu = viewportWidth < 1120
   const touchModelPreview = coarsePointer
@@ -1301,6 +1307,7 @@ function App() {
     },
   ) {
     const normalizedRootPath = normalizeProjectRoot(rootPath)
+    setActiveCatalogTab(null)
     setPanelMode(null)
     setFocusedMessageId(null)
     setError(null)
@@ -1354,6 +1361,7 @@ function App() {
     },
   ) {
     setBusy(true)
+    setActiveCatalogTab(null)
     setError(null)
     setFocusedMessageId(null)
     const selectedThread = snapshot.threads.find((thread) => thread.id === threadId)
@@ -1669,8 +1677,9 @@ function App() {
 
   function openCatalogView(tab: CatalogTab) {
     setAccountMenuOpen(false)
-    setCatalogInitialTab(tab)
-    setCatalogOpen(true)
+    setSettingsOpen(false)
+    setPanelMode(null)
+    setActiveCatalogTab(tab)
   }
 
   async function handleRestart() {
@@ -2176,9 +2185,10 @@ function App() {
     )
   }
 
-  const title = activeProjectViewRoot
-    ? activeProjectLabel
-    : activeThread?.name || activeThread?.preview || activeProjectLabel || 'Untitled thread'
+  const title =
+    activeCatalogTab || activeProjectViewRoot
+      ? activeProjectLabel
+      : activeThread?.name || activeThread?.preview || activeProjectLabel || 'Untitled thread'
 
   return (
     <>
@@ -2190,9 +2200,9 @@ function App() {
           canGoBack={canGoBack}
           canGoForward={canGoForward}
           runState={runState}
-          titlePinned={!activeProjectViewRoot}
+          titlePinned={Boolean(activeCatalogTab) || !activeProjectViewRoot}
           onTitleAccessoryClick={
-            !activeProjectViewRoot && activeThread
+            !activeCatalogTab && !activeProjectViewRoot && activeThread
               ? () => void handleArchiveThread(activeThread.id)
               : undefined
           }
@@ -2216,6 +2226,7 @@ function App() {
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <Sidebar
             collapsed={sidebarCollapsed}
+            activeUtility={activeCatalogTab ? 'plugins' : null}
             groups={sidebarGroups}
             archivedThreads={archivedThreads}
             accountMenuOpen={accountMenuOpen}
@@ -2226,7 +2237,6 @@ function App() {
             onNewThread={(rootPath) => void handleNewThread(rootPath)}
             onSearch={() => openSettingsView('account')}
             onOpenPlugins={() => openCatalogView('plugins')}
-            onOpenAutomations={() => openCatalogView('skills')}
             onSelectProject={handleProjectSelect}
             onSelectThread={(threadId) => void handleThreadSelect(threadId)}
             onArchiveThread={(threadId) => void handleArchiveThread(threadId)}
@@ -2242,159 +2252,187 @@ function App() {
             signOutDisabled={busy || accountSwitchInProgress}
           />
 
-          <div className="relative flex min-w-0 flex-1 overflow-hidden">
-            <div className="flex min-w-0 flex-1 flex-col bg-[#09090b]">
-              <div ref={scrollContainerRef} className="flex-1 overflow-y-auto shell-scroll-none">
-                <div className="mx-auto flex min-h-full w-full max-w-[74rem] flex-col px-4">
-                  <div className="shrink-0">
-                    {pendingApprovals.length > 0 && effectivePanelMode !== 'approvals' ? (
-                      <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-amber-400/10 bg-amber-500/5 px-4 py-3.5">
-                        <div>
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-200/70">
-                            Approvals
-                          </div>
-                          <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">
-                            {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'approval' : 'approvals'} need review.
-                          </div>
-                        </div>
-                        <NoticeButton
-                          onClick={() => {
-                            setDismissedApprovals(false)
-                            setPanelMode('approvals')
-                          }}
-                        >
-                          Review approvals
-                        </NoticeButton>
-                      </section>
-                    ) : null}
-
-                    {undoArchive ? (
-                      <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-white/5 bg-white/[0.03] px-4 py-3.5">
-                        <div>
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">Archived</div>
-                          <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">{undoArchive.label} moved out of the main sidebar.</div>
-                        </div>
-                        <NoticeButton onClick={() => void handleUnarchiveThread(undoArchive.id)}>Undo archive</NoticeButton>
-                      </section>
-                    ) : null}
-
-                    {noticeContent}
-                  </div>
-
-                  <ThreadViewTransition viewKey={threadViewKey}>
-                    <MessageTimeline
-                      messages={shellMessagesValue}
-                      suggestions={PROMPT_SUGGESTIONS}
-                      emptyState={activeProjectEmptyState}
-                      composerEngaged={composerEngaged}
-                      fillAvailableHeight
-                      liveStatus={liveStatus}
-                      focusedMessageId={focusedMessageId}
-                      scrollContainerRef={scrollContainerRef}
-                      onSuggestionSelect={(value) => void handleSend(value)}
-                      onOpenFileReference={handleOpenCodePath}
-                      onOpenChangeReference={handleOpenDiffPath}
-                      onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
-                      resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
-                    />
-                  </ThreadViewTransition>
-                </div>
-              </div>
-
-              <ComposerDock
-                attachments={composerAttachments}
-                clearToken={composerResetToken}
-                projectLabel={activeProjectLabel}
-                projectPath={currentProjectRoot}
-                models={availableModels}
-                selectedModel={composerModel}
-                selectedReasoning={composerReasoning}
-                reasoningOptions={reasoningOptions}
-                selectedPermissionPreset={selectedPermissionPreset}
-                permissionOptions={permissionOptions}
-                workspaceFiles={workspaceFiles}
-                liveTurn={Boolean(activeTurnId)}
-                authenticated={hasUsableAccounts}
-                rateLimitDisplays={composerRateLimitDisplays}
-                showRateLimitsInline={workspaceStore.ui.showComposerRateLimits}
-                busy={busy}
-                gitBranchLabel={projectGit ? activeBranchLabel : null}
-                gitBranches={projectGit?.branches ?? null}
-                gitSummary={composerGitSummary}
-                gitBusy={projectGitLoading || projectGitActionBusy}
-                compactModelMenu={compactModelMenu}
-                touchModelPreview={touchModelPreview}
-                onOpenProjectPicker={() => void handleAddProject()}
-                onPasteImages={(files) => void handlePasteComposerImages(files)}
-                onRemoveAttachment={handleRemoveComposerAttachment}
-                onComposingChange={setComposerEngaged}
-                onSubmit={(content) => void handleSend(content)}
-                onInterrupt={() => void handleInterruptTurn()}
-                onSelectModel={handleModelChange}
-                onSelectReasoning={handleReasoningChange}
-                onSelectPermissionPreset={(value) => void handlePermissionPresetChange(value)}
-                onOpenRateLimits={handleOpenRateLimits}
-                onCheckoutGitBranch={(branchName) => void handleCheckoutProjectGitBranch(branchName)}
-                onCreateGitBranch={(branchName) => void handleCreateProjectGitBranch(branchName)}
+          {activeCatalogTab ? (
+            <div className="flex min-w-0 flex-1 overflow-hidden">
+              <CatalogWorkspace
+                activeTab={activeCatalogTab}
+                projectRoot={currentProjectRoot}
+                onTabChange={setActiveCatalogTab}
+                onOpenLocalPath={async (path) => {
+                  setError(null)
+                  try {
+                    await openWorkspaceFile(currentProjectRoot, path)
+                  } catch (nextError) {
+                    setError(stringifyError(nextError))
+                  }
+                }}
+                onOpenExternalUrl={async (url) => {
+                  setError(null)
+                  try {
+                    await openExternalUrl(url)
+                  } catch (nextError) {
+                    setError(stringifyError(nextError))
+                  }
+                }}
               />
             </div>
+          ) : (
+            <div className="relative flex min-w-0 flex-1 overflow-hidden">
+              <div className="flex min-w-0 flex-1 flex-col bg-[#09090b]">
+                <ThreadViewTransition viewKey={threadViewKey}>
+                  <>
+                    <div ref={scrollContainerRef} className="flex-1 overflow-y-auto shell-scroll-none">
+                      <div className="mx-auto flex min-h-full w-full max-w-[74rem] flex-col px-4">
+                        <div className="shrink-0">
+                          {pendingApprovals.length > 0 && effectivePanelMode !== 'approvals' ? (
+                            <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-amber-400/10 bg-amber-500/5 px-4 py-3.5">
+                              <div>
+                                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-200/70">
+                                  Approvals
+                                </div>
+                                <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">
+                                  {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'approval' : 'approvals'} need review.
+                                </div>
+                              </div>
+                              <NoticeButton
+                                onClick={() => {
+                                  setDismissedApprovals(false)
+                                  setPanelMode('approvals')
+                                }}
+                              >
+                                Review approvals
+                              </NoticeButton>
+                            </section>
+                          ) : null}
 
-            <InspectorPanel
-              open={effectivePanelMode !== null}
-              mode={effectivePanelMode ?? 'diagnostics'}
-              overlay={inspectorAsOverlay}
-              badgeLabel={buildBadgeLabel(
-                effectivePanelMode,
-                changesCount,
-                pendingApprovals.length,
-                diagnosticsCount,
-                selectedCodePath,
-              )}
-              diffFiles={inspectorDiffFiles}
-              hiddenDiffFilesCount={hiddenDiffFilesCount}
-              hiddenFilesVisible={showHiddenDiffFiles}
-              selectedPath={activeProjectViewRoot ? selectedProjectGitPath : selectedDiffFile?.path ?? null}
-              selectedBreadcrumbs={selectedBreadcrumbs}
-              diffHeader={
-                projectGitDiffLoading && activeProjectViewRoot
-                  ? 'Loading diff...'
-                  : buildDiffHeader(selectedDiffFile)
-              }
-              diffLines={projectGitDiffLoading && activeProjectViewRoot ? [] : selectedDiffLines}
-              codePath={selectedCodePath}
-              codeBreadcrumbs={codeBreadcrumbs}
-              codeContent={selectedCodeContent}
-              codeLanguage={languageForPath(selectedCodePath)}
-              approvals={pendingApprovals}
-              warnings={diagnosticsWarnings}
-              traces={diagnosticsTraces}
-              onClose={handleClosePanel}
-              onSelectFile={(path) => {
-                if (activeProjectViewRoot) {
-                  const entry = projectGit?.files.find((file) => file.path === path)
-                  handleSelectProjectGitPath(path, defaultGitDiffTarget(entry || null))
-                  return
+                          {undoArchive ? (
+                            <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-white/5 bg-white/[0.03] px-4 py-3.5">
+                              <div>
+                                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">Archived</div>
+                                <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">{undoArchive.label} moved out of the main sidebar.</div>
+                              </div>
+                              <NoticeButton onClick={() => void handleUnarchiveThread(undoArchive.id)}>Undo archive</NoticeButton>
+                            </section>
+                          ) : null}
+
+                          {noticeContent}
+                        </div>
+
+                        <MessageTimeline
+                          messages={shellMessagesValue}
+                          suggestions={PROMPT_SUGGESTIONS}
+                          emptyState={activeProjectEmptyState}
+                          composerEngaged={composerEngaged}
+                          fillAvailableHeight
+                          liveStatus={liveStatus}
+                          focusedMessageId={focusedMessageId}
+                          scrollContainerRef={scrollContainerRef}
+                          onSuggestionSelect={(value) => void handleSend(value)}
+                          onOpenFileReference={handleOpenCodePath}
+                          onOpenChangeReference={handleOpenDiffPath}
+                          onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
+                          resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
+                        />
+                      </div>
+                    </div>
+
+                    <ComposerDock
+                      attachments={composerAttachments}
+                      clearToken={composerResetToken}
+                      projectLabel={activeProjectLabel}
+                      projectPath={currentProjectRoot}
+                      models={availableModels}
+                      selectedModel={composerModel}
+                      selectedReasoning={composerReasoning}
+                      reasoningOptions={reasoningOptions}
+                      selectedPermissionPreset={selectedPermissionPreset}
+                      permissionOptions={permissionOptions}
+                      workspaceFiles={workspaceFiles}
+                      liveTurn={Boolean(activeTurnId)}
+                      authenticated={hasUsableAccounts}
+                      rateLimitDisplays={composerRateLimitDisplays}
+                      showRateLimitsInline={workspaceStore.ui.showComposerRateLimits}
+                      busy={busy}
+                      gitBranchLabel={projectGit ? activeBranchLabel : null}
+                      gitBranches={projectGit?.branches ?? null}
+                      gitSummary={composerGitSummary}
+                      gitBusy={projectGitLoading || projectGitActionBusy}
+                      compactModelMenu={compactModelMenu}
+                      touchModelPreview={touchModelPreview}
+                      onOpenProjectPicker={() => void handleAddProject()}
+                      onPasteImages={(files) => void handlePasteComposerImages(files)}
+                      onRemoveAttachment={handleRemoveComposerAttachment}
+                      onComposingChange={setComposerEngaged}
+                      onSubmit={(content) => void handleSend(content)}
+                      onInterrupt={() => void handleInterruptTurn()}
+                      onSelectModel={handleModelChange}
+                      onSelectReasoning={handleReasoningChange}
+                      onSelectPermissionPreset={(value) => void handlePermissionPresetChange(value)}
+                      onOpenRateLimits={handleOpenRateLimits}
+                      onCheckoutGitBranch={(branchName) => void handleCheckoutProjectGitBranch(branchName)}
+                      onCreateGitBranch={(branchName) => void handleCreateProjectGitBranch(branchName)}
+                    />
+                  </>
+                </ThreadViewTransition>
+              </div>
+
+              <InspectorPanel
+                open={effectivePanelMode !== null}
+                mode={effectivePanelMode ?? 'diagnostics'}
+                overlay={inspectorAsOverlay}
+                badgeLabel={buildBadgeLabel(
+                  effectivePanelMode,
+                  changesCount,
+                  pendingApprovals.length,
+                  diagnosticsCount,
+                  selectedCodePath,
+                )}
+                diffFiles={inspectorDiffFiles}
+                hiddenDiffFilesCount={hiddenDiffFilesCount}
+                hiddenFilesVisible={showHiddenDiffFiles}
+                selectedPath={activeProjectViewRoot ? selectedProjectGitPath : selectedDiffFile?.path ?? null}
+                selectedBreadcrumbs={selectedBreadcrumbs}
+                diffHeader={
+                  projectGitDiffLoading && activeProjectViewRoot
+                    ? 'Loading diff...'
+                    : buildDiffHeader(selectedDiffFile)
                 }
-                setSelectedDiffPath(path)
-              }}
-              onToggleHiddenFiles={() => setShowHiddenDiffFiles((value) => !value)}
-              onJumpToContext={handleJumpToContext}
-              onViewCode={() => selectedDiffFile && handleOpenCodePath(selectedDiffFile.path)}
-              onShowChanges={() => {
-                if (activeProjectViewRoot && selectedCodePath) {
-                  setSelectedProjectGitPath(selectedCodePath)
-                  const entry = projectGit?.files.find((file) => file.path === selectedCodePath)
-                  setSelectedProjectGitDiffTarget(defaultGitDiffTarget(entry || null))
-                } else if (selectedCodePath) {
-                  setSelectedDiffPath(selectedCodePath)
-                }
-                setPanelMode('changes')
-              }}
-              onOpenFile={() => void handleOpenExternalFile()}
-              onApprove={(approval, decision) => void handleApproval(approval, decision)}
-              onExportDiagnostics={handleExportDiagnostics}
-            />
-          </div>
+                diffLines={projectGitDiffLoading && activeProjectViewRoot ? [] : selectedDiffLines}
+                codePath={selectedCodePath}
+                codeBreadcrumbs={codeBreadcrumbs}
+                codeContent={selectedCodeContent}
+                codeLanguage={languageForPath(selectedCodePath)}
+                approvals={pendingApprovals}
+                warnings={diagnosticsWarnings}
+                traces={diagnosticsTraces}
+                onClose={handleClosePanel}
+                onSelectFile={(path) => {
+                  if (activeProjectViewRoot) {
+                    const entry = projectGit?.files.find((file) => file.path === path)
+                    handleSelectProjectGitPath(path, defaultGitDiffTarget(entry || null))
+                    return
+                  }
+                  setSelectedDiffPath(path)
+                }}
+                onToggleHiddenFiles={() => setShowHiddenDiffFiles((value) => !value)}
+                onJumpToContext={handleJumpToContext}
+                onViewCode={() => selectedDiffFile && handleOpenCodePath(selectedDiffFile.path)}
+                onShowChanges={() => {
+                  if (activeProjectViewRoot && selectedCodePath) {
+                    setSelectedProjectGitPath(selectedCodePath)
+                    const entry = projectGit?.files.find((file) => file.path === selectedCodePath)
+                    setSelectedProjectGitDiffTarget(defaultGitDiffTarget(entry || null))
+                  } else if (selectedCodePath) {
+                    setSelectedDiffPath(selectedCodePath)
+                  }
+                  setPanelMode('changes')
+                }}
+                onOpenFile={() => void handleOpenExternalFile()}
+                onApprove={(approval, decision) => void handleApproval(approval, decision)}
+                onExportDiagnostics={handleExportDiagnostics}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -2443,28 +2481,6 @@ function App() {
         onSectionChange={setActiveSettingsSection}
       />
 
-      <CatalogModal
-        open={catalogOpen}
-        initialTab={catalogInitialTab}
-        projectRoot={currentProjectRoot}
-        onClose={() => setCatalogOpen(false)}
-        onOpenLocalPath={async (path) => {
-          setError(null)
-          try {
-            await openWorkspaceFile(currentProjectRoot, path)
-          } catch (nextError) {
-            setError(stringifyError(nextError))
-          }
-        }}
-        onOpenExternalUrl={async (url) => {
-          setError(null)
-          try {
-            await openExternalUrl(url)
-          } catch (nextError) {
-            setError(stringifyError(nextError))
-          }
-        }}
-      />
     </>
   )
 
