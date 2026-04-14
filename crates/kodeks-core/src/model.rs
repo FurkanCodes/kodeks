@@ -221,11 +221,40 @@ pub struct TimelineFileChange {
 pub struct ApprovalEntry {
     pub request_id: String,
     pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub item_id: Option<String>,
     pub kind: String,
     pub title: String,
     pub body: String,
-    pub available_decisions: Vec<String>,
+    pub available_decisions: Vec<ApprovalDecisionOption>,
     pub status: String,
+    pub reason: Option<String>,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub command_actions: Vec<serde_json::Value>,
+    pub network_approval_context: Option<serde_json::Value>,
+    pub additional_permissions: Option<serde_json::Value>,
+    pub proposed_execpolicy_amendment: Option<Vec<String>>,
+    pub proposed_network_policy_amendments: Vec<serde_json::Value>,
+    pub grant_root: Option<String>,
+    pub permissions: Option<serde_json::Value>,
+    pub file_changes: Vec<ApprovalFileChange>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ApprovalDecisionOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApprovalFileChange {
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub status: String,
+    pub additions: usize,
+    pub deletions: usize,
+    pub diff: String,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

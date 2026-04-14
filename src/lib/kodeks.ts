@@ -150,11 +150,38 @@ export type TimelineEntry = {
 export type ApprovalEntry = {
   request_id: string
   thread_id: string
+  turn_id?: string | null
+  item_id?: string | null
   kind: string
   title: string
   body: string
-  available_decisions: string[]
+  available_decisions: ApprovalDecisionOption[]
   status: string
+  reason?: string | null
+  command?: string | null
+  cwd?: string | null
+  command_actions: unknown[]
+  network_approval_context?: unknown | null
+  additional_permissions?: unknown | null
+  proposed_execpolicy_amendment?: string[] | null
+  proposed_network_policy_amendments: unknown[]
+  grant_root?: string | null
+  permissions?: unknown | null
+  file_changes: ApprovalFileChange[]
+}
+
+export type ApprovalDecisionOption = {
+  id: string
+  label: string
+}
+
+export type ApprovalFileChange = {
+  path: string
+  previous_path?: string | null
+  status: string
+  additions: number
+  deletions: number
+  diff: string
 }
 
 export type DiagnosticWarning = {

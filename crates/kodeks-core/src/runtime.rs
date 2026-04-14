@@ -15,10 +15,9 @@ use crate::account_vault::{
     LegacyTokenMigrationOutcome, LocalAccountVault, StoredAccountCredential,
 };
 use crate::model::{
-    AccountCredits, AccountRateLimitBucket, AccountRateLimits, AccountSnapshot, ApprovalEntry,
-    DiagnosticTrace, DiagnosticWarning, DiffSnapshot, MetadataRow, ModelOption,
-    ReasoningEffortOption,
-    SavedAccountView,
+    AccountCredits, AccountRateLimitBucket, AccountRateLimits, AccountSnapshot,
+    ApprovalDecisionOption, ApprovalEntry, ApprovalFileChange, DiagnosticTrace, DiagnosticWarning,
+    DiffSnapshot, MetadataRow, ModelOption, ReasoningEffortOption, SavedAccountView,
     SessionSnapshot, ThreadConfigOverride, ThreadSummary, TimelineAttachment, TimelineEntry,
     TimelineFileChange, UserInputItem,
 };
@@ -425,6 +424,7 @@ struct Controller {
     app_server: Option<AppServerHandle>,
     active_item_index: HashMap<String, usize>,
     pending_server_requests: HashMap<String, PendingServerRequest>,
+    file_change_cache: HashMap<String, Vec<ApprovalFileChange>>,
     turn_started_at: HashMap<String, Instant>,
     hydrated_threads: HashSet<String>,
     subscribed_thread_id: Option<String>,
@@ -458,6 +458,7 @@ impl Controller {
             app_server: None,
             active_item_index: HashMap::new(),
             pending_server_requests: HashMap::new(),
+            file_change_cache: HashMap::new(),
             turn_started_at: HashMap::new(),
             hydrated_threads: HashSet::new(),
             subscribed_thread_id: None,
@@ -819,9 +820,7 @@ impl Controller {
                 "error": format!("account switch did not settle on {expected}"),
             }),
         );
-        Err(anyhow!(
-            "account switch did not settle on {expected}"
-        ))
+        Err(anyhow!("account switch did not settle on {expected}"))
     }
 
     async fn refresh_rate_limits(&mut self) -> Result<()> {
@@ -917,10 +916,7 @@ impl Controller {
         Ok(())
     }
 
-    async fn login_with_saved_account(
-        &mut self,
-        stored: &StoredAccountCredential,
-    ) -> Result<()> {
+    async fn login_with_saved_account(&mut self, stored: &StoredAccountCredential) -> Result<()> {
         let app_server = self.app_server()?;
         let account_id = stored.account.id.clone();
         let access_token = stored.access_token.clone();
@@ -1005,7 +1001,8 @@ impl Controller {
             return Ok(());
         }
 
-        if self.snapshot.account.mode != "chatgpt" && self.snapshot.account.mode != "chatgptAuthTokens"
+        if self.snapshot.account.mode != "chatgpt"
+            && self.snapshot.account.mode != "chatgptAuthTokens"
         {
             self.trace_account_event(
                 "capture.current.skipped",
@@ -1120,7 +1117,9 @@ impl Controller {
                 "plan": refresh_response.plan,
             }),
         );
-        let _ = self.vault.mark_state(&refresh_response.account_id, "connected");
+        let _ = self
+            .vault
+            .mark_state(&refresh_response.account_id, "connected");
         Ok(())
     }
 
@@ -1280,7 +1279,10 @@ impl Controller {
 
         loop {
             let response = app_server
-                .request("thread/list", Some(build_thread_list_payload(archived, cursor.as_deref())))
+                .request(
+                    "thread/list",
+                    Some(build_thread_list_payload(archived, cursor.as_deref())),
+                )
                 .await?;
 
             let page = response
@@ -1560,8 +1562,7 @@ impl Controller {
     async fn login_chatgpt(&mut self) -> Result<()> {
         if let Err(error) = self.capture_current_chatgpt_account(true).await {
             self.add_warning(
-                "Could not save the current ChatGPT account before adding another one"
-                    .to_string(),
+                "Could not save the current ChatGPT account before adding another one".to_string(),
                 Some(error.to_string()),
             );
         }
@@ -1738,9 +1739,9 @@ impl Controller {
                     .filter(|account| account.id != account_id && account.state == "connected")
                     .max_by_key(|account| account.last_used_at.unwrap_or_default())
                 {
-                if let Some(credential) = self.vault.get_credential(&next_account.id)? {
-                    self.login_with_saved_account(&credential).await?;
-                } else {
+                    if let Some(credential) = self.vault.get_credential(&next_account.id)? {
+                        self.login_with_saved_account(&credential).await?;
+                    } else {
                         let app_server = self.app_server()?;
                         let _ = app_server.request("account/logout", None).await?;
                         self.refresh_account().await?;
@@ -1767,7 +1768,10 @@ impl Controller {
 
         let app_server = self.app_server()?;
         let _ = app_server
-            .request("account/disconnect", Some(json!({ "accountId": account_id })))
+            .request(
+                "account/disconnect",
+                Some(json!({ "accountId": account_id })),
+            )
             .await?;
         self.refresh_account().await?;
         let _ = self.refresh_rate_limits().await;
@@ -1788,13 +1792,22 @@ impl Controller {
             .get(&request_id)
             .cloned()
             .context("approval request no longer exists")?;
+        let approval = self
+            .snapshot
+            .approvals
+            .iter()
+            .find(|entry| entry.request_id == request_id)
+            .cloned();
 
         let result = match pending.method.as_str() {
             "item/commandExecution/requestApproval" => {
-                json!({ "decision": map_command_decision(&decision) })
+                json!({ "decision": map_command_decision(&decision, approval.as_ref()) })
             }
             "item/fileChange/requestApproval" => {
                 json!({ "decision": map_file_change_decision(&decision) })
+            }
+            "item/permissions/requestApproval" => {
+                map_permissions_approval_response(&decision, approval.as_ref())
             }
             "execCommandApproval" | "applyPatchApproval" => {
                 json!({ "decision": map_legacy_review_decision(&decision) })
@@ -2068,7 +2081,10 @@ impl Controller {
             ProtocolEvent::ServerRequest { id, method, params } => {
                 self.push_trace("in", format!("{method}: {}", summarize_json(&params)));
                 if method == "account/chatgptAuthTokens/refresh" {
-                    let refresh_target = self.resolve_saved_account_id_for_refresh(&params).ok().flatten();
+                    let refresh_target = self
+                        .resolve_saved_account_id_for_refresh(&params)
+                        .ok()
+                        .flatten();
                     if let Err(error) = self.handle_chatgpt_token_refresh(id, params).await {
                         if let Some(account_id) = refresh_target.as_deref() {
                             self.handle_saved_account_failure(
@@ -2136,7 +2152,7 @@ impl Controller {
 
     fn handle_server_request(&mut self, id: RequestIdValue, method: String, params: Value) {
         let request_id = normalize_request_id(&id);
-        let approval = build_approval_entry(&request_id, &method, &params);
+        let approval = build_approval_entry(&request_id, &method, &params, &self.file_change_cache);
 
         self.pending_server_requests.insert(
             request_id.clone(),
@@ -2159,6 +2175,10 @@ impl Controller {
             .get("turnId")
             .and_then(Value::as_str)
             .map(str::to_string);
+        if let Some(item) = params.get("item") {
+            self.cache_file_change_item(item);
+            self.hydrate_approval_from_item(&thread_id, turn_id.as_deref(), item);
+        }
         if self.snapshot.active_thread_id.as_deref() != Some(thread_id.as_str()) {
             return;
         }
@@ -2178,6 +2198,10 @@ impl Controller {
             .get("turnId")
             .and_then(Value::as_str)
             .map(str::to_string);
+        if let Some(item) = params.get("item") {
+            self.cache_file_change_item(item);
+            self.hydrate_approval_from_item(&thread_id, turn_id.as_deref(), item);
+        }
         if self.snapshot.active_thread_id.as_deref() != Some(thread_id.as_str()) {
             return;
         }
@@ -2219,6 +2243,51 @@ impl Controller {
                 }
                 entry.status = "streaming".to_string();
             }
+        }
+    }
+
+    fn cache_file_change_item(&mut self, item: &Value) {
+        if item.get("type").and_then(Value::as_str) != Some("fileChange") {
+            return;
+        }
+
+        let item_id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if item_id.is_empty() {
+            return;
+        }
+
+        self.file_change_cache
+            .insert(item_id, approval_file_changes_from_item(item));
+    }
+
+    fn hydrate_approval_from_item(&mut self, thread_id: &str, turn_id: Option<&str>, item: &Value) {
+        if item.get("type").and_then(Value::as_str) != Some("fileChange") {
+            return;
+        }
+
+        let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+        if item_id.is_empty() {
+            return;
+        }
+
+        let file_changes = approval_file_changes_from_item(item);
+        for approval in self.snapshot.approvals.iter_mut() {
+            if approval.kind != "file-change" || approval.status != "pending" {
+                continue;
+            }
+
+            let same_item = approval.item_id.as_deref() == Some(item_id);
+            let same_turn =
+                approval.thread_id == thread_id && approval.turn_id.as_deref() == turn_id;
+            if !same_item && !same_turn {
+                continue;
+            }
+
+            approval.file_changes = file_changes.clone();
         }
     }
 
@@ -2317,7 +2386,8 @@ impl Controller {
         }
 
         if let Some(target_runtime_account_id) = target_runtime_account_id {
-            if self.snapshot.account.active_account_id.as_deref() == Some(target_runtime_account_id) {
+            if self.snapshot.account.active_account_id.as_deref() == Some(target_runtime_account_id)
+            {
                 return true;
             }
         }
@@ -2830,7 +2900,12 @@ fn build_account_snapshot(previous: &AccountSnapshot, value: &Value) -> AccountS
 
     let active_account_id = reported_active_account_id
         .or_else(|| account_value.and_then(account_id))
-        .or_else(|| accounts.iter().find(|account| account.is_active).map(|account| account.id.clone()))
+        .or_else(|| {
+            accounts
+                .iter()
+                .find(|account| account.is_active)
+                .map(|account| account.id.clone())
+        })
         .or_else(|| accounts.first().map(|account| account.id.clone()));
 
     if let Some(active_id) = active_account_id.as_deref() {
@@ -2957,7 +3032,9 @@ fn collect_saved_accounts(
         })
         .unwrap_or_default();
 
-    if let Some(account) = active_alias.and_then(|item| saved_account_from_value(item, active_account_id, true)) {
+    if let Some(account) =
+        active_alias.and_then(|item| saved_account_from_value(item, active_account_id, true))
+    {
         let exists = accounts
             .iter()
             .any(|current| current.id == account.id || current.label == account.label);
@@ -3124,7 +3201,12 @@ fn integer_at(value: &Value, keys: &[&str]) -> Option<i64> {
         value
             .get(*key)
             .and_then(Value::as_i64)
-            .or_else(|| value.get(*key).and_then(Value::as_u64).and_then(|number| i64::try_from(number).ok()))
+            .or_else(|| {
+                value
+                    .get(*key)
+                    .and_then(Value::as_u64)
+                    .and_then(|number| i64::try_from(number).ok())
+            })
             .or_else(|| {
                 value
                     .get(*key)
@@ -3428,6 +3510,90 @@ fn summarize_file_changes(item: &Value) -> Vec<TimelineFileChange> {
         .unwrap_or_default()
 }
 
+fn approval_file_changes_from_item(item: &Value) -> Vec<ApprovalFileChange> {
+    item.get("changes")
+        .map(approval_file_changes_from_value)
+        .unwrap_or_default()
+}
+
+fn approval_file_changes_from_legacy_patch(file_changes: &Value) -> Vec<ApprovalFileChange> {
+    file_changes
+        .as_object()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(path, change)| {
+                    let unified_diff = change
+                        .get("unified_diff")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let (additions, deletions) = summarize_diff_counts(&unified_diff);
+                    let status = match change.get("type").and_then(Value::as_str) {
+                        Some("add") => "A",
+                        Some("delete") => "D",
+                        _ => "M",
+                    };
+                    ApprovalFileChange {
+                        path: path.clone(),
+                        previous_path: None,
+                        status: status.to_string(),
+                        additions,
+                        deletions,
+                        diff: unified_diff,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn approval_file_changes_from_value(value: &Value) -> Vec<ApprovalFileChange> {
+    value
+        .as_array()
+        .map(|changes| {
+            changes
+                .iter()
+                .filter_map(|change| {
+                    let path = change.get("path").and_then(Value::as_str)?.to_string();
+                    let diff = change
+                        .get("diff")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let previous_path = change
+                        .get("kind")
+                        .and_then(|kind| kind.get("move_path"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let (additions, deletions) = summarize_diff_counts(&diff);
+                    Some(ApprovalFileChange {
+                        path,
+                        previous_path: previous_path.clone(),
+                        status: approval_patch_change_status(change, previous_path.as_deref()),
+                        additions,
+                        deletions,
+                        diff,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn approval_patch_change_status(change: &Value, previous_path: Option<&str>) -> String {
+    match change
+        .get("kind")
+        .and_then(|kind| kind.get("type"))
+        .and_then(Value::as_str)
+    {
+        Some("add") => "A".to_string(),
+        Some("delete") => "D".to_string(),
+        Some("update") if previous_path.is_some() => "R".to_string(),
+        _ => "M".to_string(),
+    }
+}
+
 fn patch_change_status(change: &Value) -> String {
     match change
         .get("kind")
@@ -3516,6 +3682,20 @@ fn summarize_json(value: &Value) -> String {
     }
 }
 
+fn approval_turn_id(params: &Value) -> Option<String> {
+    params
+        .get("turnId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn approval_item_id(params: &Value) -> Option<String> {
+    params
+        .get("itemId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 fn sanitize_trace_message(message: &str) -> String {
     if let Ok(parsed) = serde_json::from_str::<Value>(message) {
         return summarize_json(&parsed);
@@ -3579,8 +3759,7 @@ fn is_sensitive_key(key: &str) -> bool {
     ) || matches!(
         collapsed.as_str(),
         "accesstoken" | "refreshtoken" | "idtoken" | "sessiontoken" | "authtoken"
-    )
-        || normalized.ends_with("_token")
+    ) || normalized.ends_with("_token")
         || normalized.ends_with("_secret")
         || normalized.ends_with("_password")
         || normalized.ends_with("_api_key")
@@ -3786,11 +3965,34 @@ fn build_turn_interrupt_payload(thread_id: &str, turn_id: &str) -> Value {
     })
 }
 
-fn map_command_decision(decision: &str) -> Value {
+fn map_command_decision(decision: &str, approval: Option<&ApprovalEntry>) -> Value {
     match decision {
         "acceptForSession" => Value::String("acceptForSession".to_string()),
         "decline" => Value::String("decline".to_string()),
         "cancel" => Value::String("cancel".to_string()),
+        "acceptWithExecpolicyAmendment" => json!({
+            "acceptWithExecpolicyAmendment": {
+                "execpolicy_amendment": approval
+                    .and_then(|entry| entry.proposed_execpolicy_amendment.clone())
+                    .unwrap_or_default()
+            }
+        }),
+        _ if decision.starts_with("applyNetworkPolicyAmendment:") => {
+            let amendment = decision
+                .split(':')
+                .nth(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .and_then(|index| {
+                    approval.and_then(|entry| entry.proposed_network_policy_amendments.get(index))
+                })
+                .cloned()
+                .unwrap_or(Value::Null);
+            json!({
+                "applyNetworkPolicyAmendment": {
+                    "network_policy_amendment": amendment
+                }
+            })
+        }
         _ => Value::String("accept".to_string()),
     }
 }
@@ -3813,6 +4015,21 @@ fn map_legacy_review_decision(decision: &str) -> Value {
     }
 }
 
+fn map_permissions_approval_response(decision: &str, approval: Option<&ApprovalEntry>) -> Value {
+    let scope = if decision == "acceptForSession" {
+        "session"
+    } else {
+        "turn"
+    };
+
+    json!({
+        "permissions": approval
+            .and_then(|entry| entry.permissions.clone())
+            .unwrap_or_else(|| json!({})),
+        "scope": scope,
+    })
+}
+
 fn map_generic_approval_decision(decision: &str) -> Value {
     match decision {
         "acceptForSession" => Value::String("acceptForSession".to_string()),
@@ -3822,11 +4039,18 @@ fn map_generic_approval_decision(decision: &str) -> Value {
     }
 }
 
-fn build_approval_entry(request_id: &str, method: &str, params: &Value) -> ApprovalEntry {
+fn build_approval_entry(
+    request_id: &str,
+    method: &str,
+    params: &Value,
+    file_change_cache: &HashMap<String, Vec<ApprovalFileChange>>,
+) -> ApprovalEntry {
     match method {
         "item/commandExecution/requestApproval" => ApprovalEntry {
             request_id: request_id.to_string(),
             thread_id: approval_thread_id(method, params),
+            turn_id: approval_turn_id(params),
+            item_id: approval_item_id(params),
             kind: "command".to_string(),
             title: "Command approval requested".to_string(),
             body: format!(
@@ -3840,12 +4064,51 @@ fn build_approval_entry(request_id: &str, method: &str, params: &Value) -> Appro
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
             ),
-            available_decisions: vec!["accept".to_string(), "decline".to_string()],
+            available_decisions: command_approval_decisions(params),
             status: "pending".to_string(),
+            reason: params
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            command: params
+                .get("command")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            cwd: params
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            command_actions: params
+                .get("commandActions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            network_approval_context: params.get("networkApprovalContext").cloned(),
+            additional_permissions: params.get("additionalPermissions").cloned(),
+            proposed_execpolicy_amendment: params
+                .get("proposedExecpolicyAmendment")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                }),
+            proposed_network_policy_amendments: params
+                .get("proposedNetworkPolicyAmendments")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            grant_root: None,
+            permissions: None,
+            file_changes: Vec::new(),
         },
         "item/fileChange/requestApproval" => ApprovalEntry {
             request_id: request_id.to_string(),
             thread_id: approval_thread_id(method, params),
+            turn_id: approval_turn_id(params),
+            item_id: approval_item_id(params),
             kind: "file-change".to_string(),
             title: "File change approval requested".to_string(),
             body: params
@@ -3853,28 +4116,102 @@ fn build_approval_entry(request_id: &str, method: &str, params: &Value) -> Appro
                 .and_then(Value::as_str)
                 .unwrap_or("Approve file changes")
                 .to_string(),
-            available_decisions: vec!["accept".to_string(), "decline".to_string()],
+            available_decisions: vec![
+                approval_decision("accept", "Approve once"),
+                approval_decision("acceptForSession", "Approve for session"),
+                approval_decision("decline", "Decline"),
+                approval_decision("cancel", "Cancel turn"),
+            ],
             status: "pending".to_string(),
+            reason: params
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            command: None,
+            cwd: None,
+            command_actions: Vec::new(),
+            network_approval_context: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: Vec::new(),
+            grant_root: params
+                .get("grantRoot")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            permissions: None,
+            file_changes: approval_item_id(params)
+                .and_then(|item_id| file_change_cache.get(&item_id).cloned())
+                .unwrap_or_default(),
+        },
+        "item/permissions/requestApproval" => ApprovalEntry {
+            request_id: request_id.to_string(),
+            thread_id: approval_thread_id(method, params),
+            turn_id: approval_turn_id(params),
+            item_id: approval_item_id(params),
+            kind: "permission".to_string(),
+            title: "Permission approval requested".to_string(),
+            body: params
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("Grant additional permissions")
+                .to_string(),
+            available_decisions: vec![
+                approval_decision("accept", "Grant once"),
+                approval_decision("acceptForSession", "Grant for session"),
+            ],
+            status: "pending".to_string(),
+            reason: params
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            command: None,
+            cwd: None,
+            command_actions: Vec::new(),
+            network_approval_context: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: Vec::new(),
+            grant_root: None,
+            permissions: params.get("permissions").cloned(),
+            file_changes: Vec::new(),
         },
         method if method.contains("network") && method.contains("requestApproval") => {
             ApprovalEntry {
                 request_id: request_id.to_string(),
                 thread_id: approval_thread_id(method, params),
+                turn_id: approval_turn_id(params),
+                item_id: approval_item_id(params),
                 kind: "network".to_string(),
                 title: "Network approval requested".to_string(),
                 body: format_approval_body(params, &["url", "host", "method", "reason"]),
                 available_decisions: vec![
-                    "accept".to_string(),
-                    "decline".to_string(),
-                    "cancel".to_string(),
+                    approval_decision("accept", "Allow"),
+                    approval_decision("decline", "Deny"),
+                    approval_decision("cancel", "Cancel"),
                 ],
                 status: "pending".to_string(),
+                reason: params
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                command: None,
+                cwd: None,
+                command_actions: Vec::new(),
+                network_approval_context: None,
+                additional_permissions: None,
+                proposed_execpolicy_amendment: None,
+                proposed_network_policy_amendments: Vec::new(),
+                grant_root: None,
+                permissions: None,
+                file_changes: Vec::new(),
             }
         }
         method if method.contains("userInput") && method.contains("requestApproval") => {
             ApprovalEntry {
                 request_id: request_id.to_string(),
                 thread_id: approval_thread_id(method, params),
+                turn_id: approval_turn_id(params),
+                item_id: approval_item_id(params),
                 kind: "user-input".to_string(),
                 title: "User input approval requested".to_string(),
                 body: format_approval_body(
@@ -3882,17 +4219,33 @@ fn build_approval_entry(request_id: &str, method: &str, params: &Value) -> Appro
                     &["title", "prompt", "description", "reason", "context"],
                 ),
                 available_decisions: vec![
-                    "accept".to_string(),
-                    "decline".to_string(),
-                    "cancel".to_string(),
+                    approval_decision("accept", "Allow"),
+                    approval_decision("decline", "Decline"),
+                    approval_decision("cancel", "Cancel"),
                 ],
                 status: "pending".to_string(),
+                reason: params
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                command: None,
+                cwd: None,
+                command_actions: Vec::new(),
+                network_approval_context: None,
+                additional_permissions: None,
+                proposed_execpolicy_amendment: None,
+                proposed_network_policy_amendments: Vec::new(),
+                grant_root: None,
+                permissions: None,
+                file_changes: Vec::new(),
             }
         }
         method if method.contains("permission") && method.contains("requestApproval") => {
             ApprovalEntry {
                 request_id: request_id.to_string(),
                 thread_id: approval_thread_id(method, params),
+                turn_id: approval_turn_id(params),
+                item_id: approval_item_id(params),
                 kind: "permission".to_string(),
                 title: "Permission approval requested".to_string(),
                 body: format_approval_body(
@@ -3900,53 +4253,210 @@ fn build_approval_entry(request_id: &str, method: &str, params: &Value) -> Appro
                     &["kind", "path", "pattern", "reason", "description"],
                 ),
                 available_decisions: vec![
-                    "accept".to_string(),
-                    "decline".to_string(),
-                    "cancel".to_string(),
+                    approval_decision("accept", "Allow"),
+                    approval_decision("decline", "Decline"),
+                    approval_decision("cancel", "Cancel"),
                 ],
                 status: "pending".to_string(),
+                reason: params
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                command: None,
+                cwd: None,
+                command_actions: Vec::new(),
+                network_approval_context: None,
+                additional_permissions: None,
+                proposed_execpolicy_amendment: None,
+                proposed_network_policy_amendments: Vec::new(),
+                grant_root: params
+                    .get("grantRoot")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                permissions: params.get("permissions").cloned(),
+                file_changes: Vec::new(),
             }
         }
         method if method.contains("requestApproval") => ApprovalEntry {
             request_id: request_id.to_string(),
             thread_id: approval_thread_id(method, params),
+            turn_id: approval_turn_id(params),
+            item_id: approval_item_id(params),
             kind: "approval".to_string(),
             title: "Approval requested".to_string(),
             body: summarize_json(params),
             available_decisions: vec![
-                "accept".to_string(),
-                "decline".to_string(),
-                "cancel".to_string(),
+                approval_decision("accept", "Allow"),
+                approval_decision("decline", "Decline"),
+                approval_decision("cancel", "Cancel"),
             ],
             status: "pending".to_string(),
+            reason: params
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            command: None,
+            cwd: None,
+            command_actions: Vec::new(),
+            network_approval_context: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: Vec::new(),
+            grant_root: None,
+            permissions: None,
+            file_changes: Vec::new(),
         },
         "execCommandApproval" => ApprovalEntry {
             request_id: request_id.to_string(),
             thread_id: approval_thread_id(method, params),
+            turn_id: None,
+            item_id: None,
             kind: "command".to_string(),
             title: "Legacy command approval requested".to_string(),
             body: summarize_json(params),
-            available_decisions: vec!["approved".to_string(), "denied".to_string()],
+            available_decisions: vec![
+                approval_decision("approved", "Allow"),
+                approval_decision("denied", "Deny"),
+            ],
             status: "pending".to_string(),
+            reason: params
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            command: None,
+            cwd: params
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            command_actions: Vec::new(),
+            network_approval_context: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: Vec::new(),
+            grant_root: None,
+            permissions: None,
+            file_changes: Vec::new(),
         },
         "applyPatchApproval" => ApprovalEntry {
             request_id: request_id.to_string(),
             thread_id: approval_thread_id(method, params),
+            turn_id: None,
+            item_id: None,
             kind: "patch".to_string(),
             title: "Patch approval requested".to_string(),
             body: summarize_json(params),
-            available_decisions: vec!["approved".to_string(), "denied".to_string()],
+            available_decisions: vec![
+                approval_decision("approved", "Approve"),
+                approval_decision("approved_for_session", "Approve for session"),
+                approval_decision("denied", "Decline"),
+                approval_decision("abort", "Abort"),
+            ],
             status: "pending".to_string(),
+            reason: params
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            command: None,
+            cwd: None,
+            command_actions: Vec::new(),
+            network_approval_context: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: Vec::new(),
+            grant_root: params
+                .get("grantRoot")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            permissions: None,
+            file_changes: params
+                .get("fileChanges")
+                .map(approval_file_changes_from_legacy_patch)
+                .unwrap_or_default(),
         },
         other => ApprovalEntry {
             request_id: request_id.to_string(),
             thread_id: approval_thread_id(method, params),
+            turn_id: approval_turn_id(params),
+            item_id: approval_item_id(params),
             kind: "unsupported".to_string(),
             title: format!("Unsupported server request: {other}"),
             body: summarize_json(params),
             available_decisions: Vec::new(),
             status: "pending".to_string(),
+            reason: params
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            command: None,
+            cwd: None,
+            command_actions: Vec::new(),
+            network_approval_context: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: Vec::new(),
+            grant_root: params
+                .get("grantRoot")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            permissions: params.get("permissions").cloned(),
+            file_changes: Vec::new(),
         },
+    }
+}
+
+fn approval_decision(id: &str, label: &str) -> ApprovalDecisionOption {
+    ApprovalDecisionOption {
+        id: id.to_string(),
+        label: label.to_string(),
+    }
+}
+
+fn command_approval_decisions(params: &Value) -> Vec<ApprovalDecisionOption> {
+    let mut decisions = vec![
+        approval_decision("accept", "Allow once"),
+        approval_decision("acceptForSession", "Allow for session"),
+    ];
+
+    if params
+        .get("proposedExecpolicyAmendment")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty())
+    {
+        decisions.push(approval_decision(
+            "acceptWithExecpolicyAmendment",
+            "Allow + remember rule",
+        ));
+    }
+
+    if let Some(amendments) = params
+        .get("proposedNetworkPolicyAmendments")
+        .and_then(Value::as_array)
+    {
+        for (index, amendment) in amendments.iter().enumerate() {
+            decisions.push(approval_decision(
+                &format!("applyNetworkPolicyAmendment:{index}"),
+                &network_policy_label(amendment),
+            ));
+        }
+    }
+
+    decisions.push(approval_decision("decline", "Deny"));
+    decisions.push(approval_decision("cancel", "Cancel turn"));
+    decisions
+}
+
+fn network_policy_label(amendment: &Value) -> String {
+    let host = amendment
+        .get("host")
+        .and_then(Value::as_str)
+        .unwrap_or("host");
+    let action = amendment
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("allow");
+    match action {
+        "deny" => format!("Block {host}"),
+        _ => format!("Allow {host}"),
     }
 }
 
@@ -4040,25 +4550,24 @@ fn format_duration_ms(milliseconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_account_snapshot, build_approval_entry, build_thread_resume_payload,
-        build_thread_list_payload, build_thread_start_payload, build_turn_input,
+        approval_decision, build_account_snapshot, build_approval_entry, build_thread_list_payload,
+        build_thread_resume_payload, build_thread_start_payload, build_turn_input,
         build_turn_interrupt_payload, build_turn_start_payload, build_turn_steer_payload,
         cap_approval_entries, cap_timeline_entries, command_execution_metadata,
-        extend_thread_summaries, fallback_thread_summary, format_approval_body,
-        format_duration_ms, login_notice, map_generic_approval_decision,
-        next_thread_list_cursor, parse_model_option, parse_reasoning_effort_option,
-        parse_reasoning_effort_options, push_capped, redact_json_value,
-        sanitize_trace_message, saved_account_error_requires_reauth,
+        extend_thread_summaries, fallback_thread_summary, format_approval_body, format_duration_ms,
+        login_notice, map_generic_approval_decision, next_thread_list_cursor, parse_model_option,
+        parse_reasoning_effort_option, parse_reasoning_effort_options, push_capped,
+        redact_json_value, sanitize_trace_message, saved_account_error_requires_reauth,
         should_publish_stream_snapshot, sort_thread_summaries, truncate_with_notice,
-        AccountSnapshot, ApprovalEntry, Controller, MetadataRow, SavedAccountView,
-        TimelineEntry, OUTPUT_CAP,
+        AccountSnapshot, ApprovalEntry, ApprovalFileChange, Controller, MetadataRow,
+        SavedAccountView, TimelineEntry, OUTPUT_CAP,
     };
     use crate::account_vault::{InMemorySecretStore, LocalAccountVault};
     use crate::{ReasoningEffortOption, ThreadConfigOverride};
     use kodeks_protocol::ProtocolEvent;
     use serde::Deserialize;
     use serde_json::{json, Value};
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use tokio::sync::{mpsc, watch};
@@ -4334,7 +4843,10 @@ mod tests {
         assert_eq!(snapshot.mode, "chatgpt");
         assert_eq!(snapshot.identity.as_deref(), Some("furkan@example.com"));
         assert_eq!(snapshot.plan.as_deref(), Some("pro"));
-        assert_eq!(snapshot.active_account_id.as_deref(), Some("furkan@example.com"));
+        assert_eq!(
+            snapshot.active_account_id.as_deref(),
+            Some("furkan@example.com")
+        );
         assert_eq!(snapshot.accounts.len(), 1);
         assert!(snapshot.accounts[0].is_active);
         assert_eq!(snapshot.accounts[0].label, "furkan@example.com");
@@ -4695,9 +5207,7 @@ mod tests {
             .await
             .expect_err("selection should fail without secure credential");
 
-        assert!(error
-            .to_string()
-            .contains("missing a stored token"));
+        assert!(error.to_string().contains("missing a stored token"));
         assert_eq!(
             controller
                 .vault
@@ -4815,6 +5325,7 @@ mod tests {
                 "method": "GET",
                 "reason": "Fetch data"
             }),
+            &HashMap::new(),
         );
 
         assert_eq!(approval.kind, "network");
@@ -4822,7 +5333,11 @@ mod tests {
         assert!(approval.body.contains("url: https://api.example.com"));
         assert_eq!(
             approval.available_decisions,
-            vec!["accept", "decline", "cancel"]
+            vec![
+                approval_decision("accept", "Allow"),
+                approval_decision("decline", "Deny"),
+                approval_decision("cancel", "Cancel"),
+            ]
         );
     }
 
@@ -4837,6 +5352,7 @@ mod tests {
                 "path": "/tmp/output.log",
                 "reason": "Write logs"
             }),
+            &HashMap::new(),
         );
 
         assert_eq!(approval.kind, "permission");
@@ -4856,11 +5372,75 @@ mod tests {
                 "prompt": "Choose environment",
                 "description": "Used for deployment"
             }),
+            &HashMap::new(),
         );
 
         assert_eq!(approval.kind, "user-input");
         assert!(approval.body.contains("title: Need a value"));
         assert!(approval.body.contains("prompt: Choose environment"));
+    }
+
+    #[test]
+    fn builds_file_change_approval_entries_with_cached_diffs() {
+        let mut cache = HashMap::new();
+        cache.insert(
+            "item-4".to_string(),
+            vec![ApprovalFileChange {
+                path: "src/app.ts".to_string(),
+                previous_path: None,
+                status: "M".to_string(),
+                additions: 2,
+                deletions: 1,
+                diff: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+            }],
+        );
+
+        let approval = build_approval_entry(
+            "req-4",
+            "item/fileChange/requestApproval",
+            &json!({
+                "threadId": "thread-4",
+                "turnId": "turn-4",
+                "itemId": "item-4",
+                "reason": "Write file"
+            }),
+            &cache,
+        );
+
+        assert_eq!(approval.kind, "file-change");
+        assert_eq!(approval.turn_id.as_deref(), Some("turn-4"));
+        assert_eq!(approval.item_id.as_deref(), Some("item-4"));
+        assert_eq!(approval.file_changes.len(), 1);
+        assert_eq!(approval.file_changes[0].path, "src/app.ts");
+    }
+
+    #[test]
+    fn builds_permissions_approval_entries_with_requested_profile() {
+        let approval = build_approval_entry(
+            "req-5",
+            "item/permissions/requestApproval",
+            &json!({
+                "threadId": "thread-5",
+                "turnId": "turn-5",
+                "itemId": "item-5",
+                "reason": "Need write access",
+                "permissions": {
+                    "fileSystem": {
+                        "write": ["/tmp/out.log"]
+                    },
+                    "network": {
+                        "enabled": true
+                    }
+                }
+            }),
+            &HashMap::new(),
+        );
+
+        assert_eq!(approval.kind, "permission");
+        assert_eq!(approval.available_decisions.len(), 2);
+        assert_eq!(approval.available_decisions[0].id, "accept");
+        assert_eq!(approval.available_decisions[1].id, "acceptForSession");
+        assert!(approval.permissions.is_some());
     }
 
     #[test]
@@ -4938,11 +5518,24 @@ mod tests {
             .map(|index| ApprovalEntry {
                 request_id: format!("req-{index}"),
                 thread_id: "thread-1".to_string(),
+                turn_id: None,
+                item_id: None,
                 kind: "command".to_string(),
                 title: format!("Approval {index}"),
                 body: String::new(),
-                available_decisions: vec!["accept".to_string()],
+                available_decisions: vec![approval_decision("accept", "Allow")],
                 status: "pending".to_string(),
+                reason: None,
+                command: None,
+                cwd: None,
+                command_actions: Vec::new(),
+                network_approval_context: None,
+                additional_permissions: None,
+                proposed_execpolicy_amendment: None,
+                proposed_network_policy_amendments: Vec::new(),
+                grant_root: None,
+                permissions: None,
+                file_changes: Vec::new(),
             })
             .collect::<Vec<_>>();
 
@@ -5037,7 +5630,10 @@ mod tests {
             Some("cursor-9".to_string())
         );
         assert_eq!(next_thread_list_cursor(&json!({})), None);
-        assert_eq!(next_thread_list_cursor(&json!({ "nextCursor": null })), None);
+        assert_eq!(
+            next_thread_list_cursor(&json!({ "nextCursor": null })),
+            None
+        );
     }
 
     #[test]
@@ -5354,7 +5950,10 @@ mod tests {
             .expect("expected thread summary");
 
         assert_eq!(summary.last_account_id.as_deref(), Some("acct-a"));
-        assert_eq!(summary.last_account_label.as_deref(), Some("first@example.com"));
+        assert_eq!(
+            summary.last_account_label.as_deref(),
+            Some("first@example.com")
+        );
         assert_eq!(summary.last_account_plan.as_deref(), Some("pro"));
     }
 
@@ -5541,11 +6140,24 @@ mod tests {
         controller.snapshot.approvals.push(ApprovalEntry {
             request_id: "req-1".to_string(),
             thread_id: "thread-1".to_string(),
+            turn_id: None,
+            item_id: None,
             kind: "command".to_string(),
             title: "Approval".to_string(),
             body: String::new(),
-            available_decisions: vec!["accept".to_string()],
+            available_decisions: vec![approval_decision("accept", "Allow")],
             status: "pending".to_string(),
+            reason: None,
+            command: None,
+            cwd: None,
+            command_actions: Vec::new(),
+            network_approval_context: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: Vec::new(),
+            grant_root: None,
+            permissions: None,
+            file_changes: Vec::new(),
         });
         controller.subscribed_thread_id = Some("thread-1".to_string());
 

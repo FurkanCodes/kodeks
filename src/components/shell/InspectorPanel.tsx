@@ -1,5 +1,11 @@
 import type { ReactNode } from 'react'
-import type { ApprovalEntry, DiagnosticTrace, DiagnosticWarning } from '../../lib/kodeks'
+import type {
+  ApprovalDecisionOption,
+  ApprovalEntry,
+  ApprovalFileChange,
+  DiagnosticTrace,
+  DiagnosticWarning,
+} from '../../lib/kodeks'
 import { ChevronIcon, CloseIcon, DiffAddIcon, DiffRemoveIcon, FileCodeIcon } from './icons'
 
 export type DrawerMode = 'changes' | 'code' | 'approvals' | 'diagnostics'
@@ -8,7 +14,7 @@ export type DiffFileView = {
   path: string
   additions: number
   deletions: number
-  status: 'A' | 'M' | 'D'
+  status: 'A' | 'M' | 'D' | 'R'
 }
 
 export type DiffLineView = {
@@ -48,11 +54,12 @@ type InspectorPanelProps = {
   onExportDiagnostics: () => void
 }
 
-function StatusBadge(props: { status: 'A' | 'M' | 'D' }) {
+function StatusBadge(props: { status: 'A' | 'M' | 'D' | 'R' }) {
   const map = {
     A: { label: 'A', color: '#4ade80', background: 'rgba(74,222,128,0.08)' },
     M: { label: 'M', color: '#fbbf24', background: 'rgba(251,191,36,0.08)' },
     D: { label: 'D', color: '#f87171', background: 'rgba(248,113,113,0.08)' },
+    R: { label: 'R', color: '#93c5fd', background: 'rgba(147,197,253,0.08)' },
   }
   const current = map[props.status]
 
@@ -130,22 +137,291 @@ function DiffLine(props: { line: DiffLineView }) {
   )
 }
 
-function decisionLabel(decision: string) {
-  switch (decision) {
-    case 'accept':
-    case 'approved':
-      return 'Allow'
-    case 'acceptForSession':
-    case 'approved_for_session':
-      return 'Allow for session'
-    case 'decline':
-    case 'denied':
-      return 'Deny'
-    case 'abort':
-      return 'Abort'
-    default:
-      return decision
+function ApprovalMetaRow(props: { label: string; value: ReactNode }) {
+  return (
+    <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3 text-[12.5px] leading-6">
+      <div className="uppercase tracking-[0.06em] text-neutral-500">{props.label}</div>
+      <div className="min-w-0 break-words text-neutral-300">{props.value}</div>
+    </div>
+  )
+}
+
+function approvalToneForLine(line: string): DiffLineView['tone'] {
+  if (line.startsWith('+') && !line.startsWith('+++')) {
+    return 'add'
   }
+  if (line.startsWith('-') && !line.startsWith('---')) {
+    return 'remove'
+  }
+  if (line.startsWith('@@') || line.startsWith('diff --git') || line.startsWith('rename ')) {
+    return 'header'
+  }
+  return 'context'
+}
+
+function buildApprovalDiffPreview(diff: string, limit = 18) {
+  const lines = diff.split('\n').filter((line, index, items) => !(index === items.length - 1 && line === ''))
+  const preview = lines.slice(0, limit)
+  return {
+    truncated: lines.length > limit,
+    lines: preview.map((text, index) => ({
+      id: `${index}-${text}`,
+      text,
+      tone: approvalToneForLine(text),
+    })),
+  }
+}
+
+function describeCommandAction(action: unknown) {
+  if (!action || typeof action !== 'object') {
+    return null
+  }
+
+  const value = action as Record<string, unknown>
+  switch (value.type) {
+    case 'read':
+      return `Read ${String(value.path || 'file')}`
+    case 'listFiles':
+      return `List files ${value.path ? `in ${String(value.path)}` : 'in workspace'}`
+    case 'search':
+      return `Search ${value.query ? `"${String(value.query)}"` : 'repo'}${value.path ? ` in ${String(value.path)}` : ''}`
+    case 'unknown':
+      return value.command ? `Run ${String(value.command)}` : 'Run command'
+    default:
+      return null
+  }
+}
+
+function renderJsonValue(value: unknown) {
+  if (value == null) {
+    return null
+  }
+
+  return (
+    <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl border border-white/6 bg-black/20 p-3 text-[12px] leading-6 text-neutral-300">
+      {JSON.stringify(value, null, 2)}
+    </pre>
+  )
+}
+
+function renderDecisionButtons(
+  approval: ApprovalEntry,
+  onApprove: (approval: ApprovalEntry, decision: string) => void,
+) {
+  return (
+    <div className="mt-4 flex flex-wrap gap-2">
+      {approval.available_decisions.map((decision: ApprovalDecisionOption) => (
+        <button
+          type="button"
+          className="rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-medium text-neutral-300 transition hover:border-white/20 hover:text-white"
+          key={`${approval.request_id}-${decision.id}`}
+          onClick={() => onApprove(approval, decision.id)}
+        >
+          {decision.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function renderCommandApprovalCard(
+  approval: ApprovalEntry,
+  onApprove: (approval: ApprovalEntry, decision: string) => void,
+) {
+  const actions = approval.command_actions.map(describeCommandAction).filter(Boolean) as string[]
+  const networkContext = approval.network_approval_context as
+    | { host?: string | null; protocol?: string | null }
+    | null
+    | undefined
+
+  return (
+    <article className="rounded-xl border border-white/5 bg-white/[0.02] p-4" key={approval.request_id}>
+      <div className="mb-2 text-[11px] uppercase tracking-[0.06em] text-neutral-500">command</div>
+      <div className="text-[14px] font-medium text-neutral-200">{approval.title}</div>
+      {approval.reason ? <div className="mt-2 text-[13px] leading-6 text-neutral-400">{approval.reason}</div> : null}
+      {approval.command ? (
+        <pre className="mt-3 overflow-x-auto whitespace-pre-wrap rounded-xl border border-white/6 bg-black/20 p-3 text-[12.5px] leading-6 text-neutral-200">
+          {approval.command}
+        </pre>
+      ) : null}
+      <div className="mt-3 space-y-2.5">
+        {approval.cwd ? <ApprovalMetaRow label="cwd" value={<code>{approval.cwd}</code>} /> : null}
+        {actions.length > 0 ? (
+          <ApprovalMetaRow
+            label="actions"
+            value={
+              <div className="space-y-1">
+                {actions.map((action, index) => (
+                  <div key={`${approval.request_id}-action-${index}`}>{action}</div>
+                ))}
+              </div>
+            }
+          />
+        ) : null}
+        {networkContext?.host ? (
+          <ApprovalMetaRow
+            label="network"
+            value={`${networkContext.protocol || 'network'}://${networkContext.host}`}
+          />
+        ) : null}
+        {approval.proposed_execpolicy_amendment?.length ? (
+          <ApprovalMetaRow
+            label="rule"
+            value={
+              <div className="space-y-1">
+                {approval.proposed_execpolicy_amendment.map((entry) => (
+                  <code className="block" key={`${approval.request_id}-${entry}`}>
+                    {entry}
+                  </code>
+                ))}
+              </div>
+            }
+          />
+        ) : null}
+        {approval.additional_permissions ? (
+          <ApprovalMetaRow label="permissions" value={renderJsonValue(approval.additional_permissions)} />
+        ) : null}
+      </div>
+      {renderDecisionButtons(approval, onApprove)}
+    </article>
+  )
+}
+
+function renderFileChangeCard(
+  approval: ApprovalEntry,
+  onApprove: (approval: ApprovalEntry, decision: string) => void,
+) {
+  return (
+    <article className="rounded-xl border border-white/5 bg-white/[0.02] p-4" key={approval.request_id}>
+      <div className="mb-2 text-[11px] uppercase tracking-[0.06em] text-neutral-500">file change</div>
+      <div className="text-[14px] font-medium text-neutral-200">{approval.title}</div>
+      {approval.reason ? <div className="mt-2 text-[13px] leading-6 text-neutral-400">{approval.reason}</div> : null}
+      {approval.grant_root ? (
+        <div className="mt-3 rounded-xl border border-sky-400/15 bg-sky-400/[0.06] px-3 py-2 text-[12.5px] leading-6 text-sky-100/80">
+          Session root request: <code>{approval.grant_root}</code>
+        </div>
+      ) : null}
+      {approval.file_changes.length > 0 ? (
+        <div className="mt-4 space-y-4">
+          {approval.file_changes.map((change: ApprovalFileChange) => {
+            const preview = buildApprovalDiffPreview(change.diff)
+            return (
+              <div className="rounded-xl border border-white/6 bg-black/10 p-3" key={`${approval.request_id}-${change.path}`}>
+                <div className="flex items-start gap-3">
+                  <StatusBadge status={(change.status as 'A' | 'M' | 'D' | 'R') || 'M'} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-medium text-neutral-200">{change.path}</div>
+                    {change.previous_path ? (
+                      <div className="text-[12px] text-neutral-500">renamed from {change.previous_path}</div>
+                    ) : null}
+                  </div>
+                  <div className="shrink-0 text-[11px]">
+                    {change.additions > 0 ? <span className="text-[#4ade80]">+{change.additions}</span> : null}
+                    {change.deletions > 0 ? <span className="ml-2 text-[#f87171]">-{change.deletions}</span> : null}
+                  </div>
+                </div>
+                {preview.lines.length > 0 ? (
+                  <div className="mt-3 overflow-hidden rounded-lg border border-white/6 bg-[#0a0a0c]">
+                    {preview.lines.map((line) => (
+                      <div
+                        className="shell-cousine whitespace-pre-wrap px-3 py-1.5 text-[12px] leading-6"
+                        key={`${approval.request_id}-${change.path}-${line.id}`}
+                        style={{
+                          color:
+                            line.tone === 'add'
+                              ? '#4ade80'
+                              : line.tone === 'remove'
+                                ? '#f87171'
+                                : line.tone === 'header'
+                                  ? '#737373'
+                                  : '#d4d4d4',
+                          background:
+                            line.tone === 'add'
+                              ? 'rgba(74,222,128,0.05)'
+                              : line.tone === 'remove'
+                                ? 'rgba(248,113,113,0.05)'
+                                : line.tone === 'header'
+                                  ? 'rgba(255,255,255,0.02)'
+                                  : 'transparent',
+                        }}
+                      >
+                        {line.text || ' '}
+                      </div>
+                    ))}
+                    {preview.truncated ? (
+                      <div className="px-3 py-2 text-[11px] uppercase tracking-[0.06em] text-neutral-500">
+                        Diff preview truncated
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="mt-3 text-[12px] text-neutral-500">No textual diff preview.</div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="mt-3 rounded-xl border border-white/6 bg-black/10 px-3 py-2 text-[12.5px] text-neutral-500">
+          Waiting for file diff details from runtime.
+        </div>
+      )}
+      {renderDecisionButtons(approval, onApprove)}
+    </article>
+  )
+}
+
+function renderPermissionApprovalCard(
+  approval: ApprovalEntry,
+  onApprove: (approval: ApprovalEntry, decision: string) => void,
+) {
+  return (
+    <article className="rounded-xl border border-white/5 bg-white/[0.02] p-4" key={approval.request_id}>
+      <div className="mb-2 text-[11px] uppercase tracking-[0.06em] text-neutral-500">permissions</div>
+      <div className="text-[14px] font-medium text-neutral-200">{approval.title}</div>
+      {approval.reason ? <div className="mt-2 text-[13px] leading-6 text-neutral-400">{approval.reason}</div> : null}
+      {approval.permissions ? (
+        <div className="mt-3">{renderJsonValue(approval.permissions)}</div>
+      ) : (
+        <div className="mt-3 text-[12.5px] text-neutral-500">No permission payload attached.</div>
+      )}
+      {renderDecisionButtons(approval, onApprove)}
+    </article>
+  )
+}
+
+function renderGenericApprovalCard(
+  approval: ApprovalEntry,
+  onApprove: (approval: ApprovalEntry, decision: string) => void,
+) {
+  return (
+    <article className="rounded-xl border border-white/5 bg-white/[0.02] p-4" key={approval.request_id}>
+      <div className="mb-2 text-[11px] uppercase tracking-[0.06em] text-neutral-500">{approval.kind}</div>
+      <div className="text-[14px] font-medium text-neutral-200">{approval.title}</div>
+      <pre className="mt-3 whitespace-pre-wrap text-[13px] leading-6 text-neutral-400">{approval.body}</pre>
+      {renderDecisionButtons(approval, onApprove)}
+    </article>
+  )
+}
+
+function renderApprovalCard(
+  approval: ApprovalEntry,
+  onApprove: (approval: ApprovalEntry, decision: string) => void,
+) {
+  if (approval.kind === 'command') {
+    return renderCommandApprovalCard(approval, onApprove)
+  }
+  if (approval.kind === 'file-change' || approval.kind === 'patch') {
+    return renderFileChangeCard(approval, onApprove)
+  }
+  if (
+    approval.kind === 'permission' &&
+    approval.permissions &&
+    approval.available_decisions.every((decision) => decision.id === 'accept' || decision.id === 'acceptForSession')
+  ) {
+    return renderPermissionApprovalCard(approval, onApprove)
+  }
+  return renderGenericApprovalCard(approval, onApprove)
 }
 
 function CodeTokenLine(props: { text: string; lineNumber: number; language?: string }) {
@@ -667,25 +943,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
       {props.mode === 'approvals' ? (
         <div className="shell-scroll-none flex-1 space-y-3 overflow-y-auto p-4">
           {props.approvals.length > 0 ? (
-            props.approvals.map((approval) => (
-              <article className="rounded-xl border border-white/5 bg-white/[0.02] p-4" key={approval.request_id}>
-                <div className="mb-2 text-[11px] uppercase tracking-[0.06em] text-neutral-500">{approval.kind}</div>
-                <div className="text-[14px] font-medium text-neutral-200">{approval.title}</div>
-                <pre className="mt-3 whitespace-pre-wrap text-[13px] leading-6 text-neutral-400">{approval.body}</pre>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {approval.available_decisions.map((decision) => (
-                    <button
-                      type="button"
-                      className="rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-medium text-neutral-300 transition hover:border-white/20 hover:text-white"
-                      key={`${approval.request_id}-${decision}`}
-                      onClick={() => props.onApprove(approval, decision)}
-                    >
-                      {decisionLabel(decision)}
-                    </button>
-                  ))}
-                </div>
-              </article>
-            ))
+            props.approvals.map((approval) => renderApprovalCard(approval, props.onApprove))
           ) : (
             <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 text-[14px] text-neutral-500">
               No approvals are waiting right now.
