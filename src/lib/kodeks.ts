@@ -299,6 +299,25 @@ export type GitCommitPromptPayload = {
   prompt: string
 }
 
+export type ProjectTerminalSession = {
+  session_id: string
+  project_root: string
+  shell: string
+  pid?: number | null
+}
+
+export type ProjectTerminalOutputEvent = {
+  session_id: string
+  chunk: string
+}
+
+export type ProjectTerminalExitEvent = {
+  session_id: string
+  code?: number | null
+  signal?: string | null
+  reason?: string | null
+}
+
 export type GitCommitRequest = {
   subject: string
   body?: string | null
@@ -531,8 +550,48 @@ export async function buildGitCommitPrompt(projectRoot: string) {
   return invoke<GitCommitPromptPayload>('build_git_commit_prompt', { projectRoot })
 }
 
+export async function ensureProjectTerminal(projectRoot: string, cols: number, rows: number) {
+  return invoke<ProjectTerminalSession>('ensure_project_terminal', {
+    projectRoot,
+    cols,
+    rows,
+  })
+}
+
+export async function createProjectTerminal(projectRoot: string, cols: number, rows: number) {
+  return invoke<ProjectTerminalSession>('create_project_terminal', {
+    projectRoot,
+    cols,
+    rows,
+  })
+}
+
+export async function writeProjectTerminal(sessionId: string, data: string) {
+  return invoke<void>('write_project_terminal', { sessionId, data })
+}
+
+export async function resizeProjectTerminal(sessionId: string, cols: number, rows: number) {
+  return invoke<void>('resize_project_terminal', { sessionId, cols, rows })
+}
+
+export async function killProjectTerminal(sessionId: string) {
+  return invoke<void>('kill_project_terminal', { sessionId })
+}
+
 export function onSnapshot(callback: (snapshot: Snapshot) => void) {
   return listen<Snapshot>('kodeks://snapshot', (event) => {
+    callback(event.payload)
+  })
+}
+
+export function onProjectTerminalOutput(callback: (payload: ProjectTerminalOutputEvent) => void) {
+  return listen<ProjectTerminalOutputEvent>('kodeks://terminal-output', (event) => {
+    callback(event.payload)
+  })
+}
+
+export function onProjectTerminalExit(callback: (payload: ProjectTerminalExitEvent) => void) {
+  return listen<ProjectTerminalExitEvent>('kodeks://terminal-exit', (event) => {
     callback(event.payload)
   })
 }

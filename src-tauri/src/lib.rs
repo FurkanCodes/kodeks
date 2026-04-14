@@ -6,19 +6,23 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result as AnyhowResult, anyhow};
-use kodeks_core::{ModelOption, RuntimeHandle, SessionSnapshot, ThreadConfigOverride, UserInputItem};
+use anyhow::{anyhow, Context, Result as AnyhowResult};
+use kodeks_core::{
+    ModelOption, RuntimeHandle, SessionSnapshot, ThreadConfigOverride, UserInputItem,
+};
 use serde::Deserialize;
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 use tauri::{Emitter, Manager, State};
 use workspace_store::WorkspaceStorePayload;
 
 mod catalog;
 mod git;
+mod terminal;
 mod workspace_store;
 
 struct DesktopState {
     catalog: Mutex<catalog::CatalogRepository>,
+    terminal: Mutex<terminal::TerminalManager>,
     runtime: RuntimeHandle,
     _single_instance: Option<SingleInstanceGuard>,
 }
@@ -68,7 +72,12 @@ fn multi_instance_allowed() -> bool {
 fn env_flag(key: &str) -> bool {
     env::var(key)
         .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -112,6 +121,15 @@ fn catalog_state<'a>(
         .map_err(|_| "catalog state is unavailable".to_string())
 }
 
+fn terminal_state<'a>(
+    state: &'a State<'_, DesktopState>,
+) -> Result<MutexGuard<'a, terminal::TerminalManager>, String> {
+    state
+        .terminal
+        .lock()
+        .map_err(|_| "terminal state is unavailable".to_string())
+}
+
 async fn fetch_app_server_plugins(
     runtime: &RuntimeHandle,
     project_root: Option<&str>,
@@ -129,7 +147,9 @@ async fn fetch_app_server_plugins(
         .request_app_server("plugin/list".to_string(), Some(JsonValue::Object(params)))
         .await
         .ok()
-        .and_then(|value| serde_json::from_value::<catalog::AppServerPluginListResponse>(value).ok())
+        .and_then(|value| {
+            serde_json::from_value::<catalog::AppServerPluginListResponse>(value).ok()
+        })
 }
 
 async fn fetch_app_server_plugin_detail(
@@ -146,17 +166,27 @@ async fn fetch_app_server_plugin_detail(
         )
         .await
         .ok()
-        .and_then(|value| serde_json::from_value::<catalog::AppServerPluginReadResponse>(value).ok())
+        .and_then(|value| {
+            serde_json::from_value::<catalog::AppServerPluginReadResponse>(value).ok()
+        })
 }
 
 #[tauri::command]
 async fn get_snapshot(state: State<'_, DesktopState>) -> Result<SessionSnapshot, String> {
-    state.runtime.snapshot().await.map_err(|error| error.to_string())
+    state
+        .runtime
+        .snapshot()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn refresh_runtime(state: State<'_, DesktopState>) -> Result<SessionSnapshot, String> {
-    state.runtime.refresh().await.map_err(|error| error.to_string())
+    state
+        .runtime
+        .refresh()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -191,10 +221,15 @@ async fn get_plugin_details(
     plugin_id: String,
     project_root: Option<String>,
 ) -> Result<catalog::PluginDetails, String> {
-    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    let app_server_plugins =
+        fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
     let locator = if let Some(app_server_plugins) = app_server_plugins.as_ref() {
         catalog_state(&state)?
-            .resolve_app_server_plugin_locator(&plugin_id, project_root.as_deref(), Some(app_server_plugins))
+            .resolve_app_server_plugin_locator(
+                &plugin_id,
+                project_root.as_deref(),
+                Some(app_server_plugins),
+            )
             .map_err(|error| error.to_string())?
     } else {
         None
@@ -221,10 +256,15 @@ async fn install_plugin(
     plugin_id: String,
     project_root: Option<String>,
 ) -> Result<catalog::InstalledPluginState, String> {
-    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    let app_server_plugins =
+        fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
     let locator = if let Some(app_server_plugins) = app_server_plugins.as_ref() {
         catalog_state(&state)?
-            .resolve_app_server_plugin_locator(&plugin_id, project_root.as_deref(), Some(app_server_plugins))
+            .resolve_app_server_plugin_locator(
+                &plugin_id,
+                project_root.as_deref(),
+                Some(app_server_plugins),
+            )
             .map_err(|error| error.to_string())?
     } else {
         None
@@ -244,10 +284,15 @@ async fn install_plugin(
             .await
             .map_err(|error| error.to_string())?;
 
-        let refreshed_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+        let refreshed_plugins =
+            fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
         let refreshed_locator = if let Some(app_server_plugins) = refreshed_plugins.as_ref() {
             catalog_state(&state)?
-                .resolve_app_server_plugin_locator(&plugin_id, project_root.as_deref(), Some(app_server_plugins))
+                .resolve_app_server_plugin_locator(
+                    &plugin_id,
+                    project_root.as_deref(),
+                    Some(app_server_plugins),
+                )
                 .map_err(|error| error.to_string())?
         } else {
             None
@@ -280,10 +325,15 @@ async fn uninstall_plugin(
     plugin_id: String,
     project_root: Option<String>,
 ) -> Result<catalog::InstalledPluginState, String> {
-    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    let app_server_plugins =
+        fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
     let locator = if let Some(app_server_plugins) = app_server_plugins.as_ref() {
         catalog_state(&state)?
-            .resolve_app_server_plugin_locator(&plugin_id, project_root.as_deref(), Some(app_server_plugins))
+            .resolve_app_server_plugin_locator(
+                &plugin_id,
+                project_root.as_deref(),
+                Some(app_server_plugins),
+            )
             .map_err(|error| error.to_string())?
     } else {
         None
@@ -302,9 +352,15 @@ async fn uninstall_plugin(
             .await
             .map_err(|error| error.to_string())?;
 
-        let refreshed_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+        let refreshed_plugins =
+            fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
         return catalog_state(&state)?
-            .get_plugin_details(&plugin_id, project_root.as_deref(), refreshed_plugins.as_ref(), None)
+            .get_plugin_details(
+                &plugin_id,
+                project_root.as_deref(),
+                refreshed_plugins.as_ref(),
+                None,
+            )
             .map(|details| details.installed_state)
             .map_err(|error| error.to_string());
     }
@@ -321,7 +377,8 @@ async fn set_plugin_enabled(
     enabled: bool,
     project_root: Option<String>,
 ) -> Result<catalog::InstalledPluginState, String> {
-    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    let app_server_plugins =
+        fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
     catalog_state(&state)?
         .set_plugin_enabled(
             &plugin_id,
@@ -338,9 +395,14 @@ async fn complete_plugin_auth(
     plugin_id: String,
     project_root: Option<String>,
 ) -> Result<catalog::InstalledPluginState, String> {
-    let app_server_plugins = fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
+    let app_server_plugins =
+        fetch_app_server_plugins(&state.runtime, project_root.as_deref(), false).await;
     catalog_state(&state)?
-        .complete_plugin_auth(&plugin_id, project_root.as_deref(), app_server_plugins.as_ref())
+        .complete_plugin_auth(
+            &plugin_id,
+            project_root.as_deref(),
+            app_server_plugins.as_ref(),
+        )
         .map_err(|error| error.to_string())
 }
 
@@ -425,7 +487,11 @@ async fn save_workspace_store(
 
 #[tauri::command]
 async fn restart_runtime(state: State<'_, DesktopState>) -> Result<SessionSnapshot, String> {
-    state.runtime.restart().await.map_err(|error| error.to_string())
+    state
+        .runtime
+        .restart()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -548,7 +614,11 @@ async fn cancel_login(state: State<'_, DesktopState>) -> Result<SessionSnapshot,
 
 #[tauri::command]
 async fn logout(state: State<'_, DesktopState>) -> Result<SessionSnapshot, String> {
-    state.runtime.logout().await.map_err(|error| error.to_string())
+    state
+        .runtime
+        .logout()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -798,6 +868,65 @@ async fn build_git_commit_prompt(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn ensure_project_terminal(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    project_root: String,
+    cols: u16,
+    rows: u16,
+) -> Result<terminal::ProjectTerminalSession, String> {
+    terminal_state(&state)?
+        .ensure_session(&app, project_root, cols, rows)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_project_terminal(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    project_root: String,
+    cols: u16,
+    rows: u16,
+) -> Result<terminal::ProjectTerminalSession, String> {
+    terminal_state(&state)?
+        .create_session(&app, project_root, cols, rows)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn write_project_terminal(
+    state: State<'_, DesktopState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    terminal_state(&state)?
+        .write_session(&session_id, &data)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn resize_project_terminal(
+    state: State<'_, DesktopState>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    terminal_state(&state)?
+        .resize_session(&session_id, cols, rows)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn kill_project_terminal(
+    state: State<'_, DesktopState>,
+    session_id: String,
+) -> Result<(), String> {
+    terminal_state(&state)?
+        .kill_session(&session_id)
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -820,6 +949,7 @@ pub fn run() {
 
             app.manage(DesktopState {
                 catalog: Mutex::new(catalog::CatalogRepository::new_mock()),
+                terminal: Mutex::new(terminal::TerminalManager::default()),
                 runtime,
                 _single_instance: single_instance,
             });
@@ -834,24 +964,24 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-    get_snapshot,
-    refresh_runtime,
-    refresh_rate_limits,
-    list_plugins,
-    get_plugin_details,
-    install_plugin,
-    uninstall_plugin,
-    set_plugin_enabled,
-    complete_plugin_auth,
-    list_skills,
-    get_skill_details,
-    install_skill,
-    set_skill_enabled,
-    create_skill_scaffold,
-    create_plugin_scaffold,
-    load_workspace_store,
-    save_workspace_store,
-    restart_runtime,
+            get_snapshot,
+            refresh_runtime,
+            refresh_rate_limits,
+            list_plugins,
+            get_plugin_details,
+            install_plugin,
+            uninstall_plugin,
+            set_plugin_enabled,
+            complete_plugin_auth,
+            list_skills,
+            get_skill_details,
+            install_skill,
+            set_skill_enabled,
+            create_skill_scaffold,
+            create_plugin_scaffold,
+            load_workspace_store,
+            save_workspace_store,
+            restart_runtime,
             select_thread,
             start_thread,
             send_prompt,
@@ -884,6 +1014,11 @@ pub fn run() {
             create_git_snapshot,
             restore_git_snapshot,
             build_git_commit_prompt,
+            ensure_project_terminal,
+            create_project_terminal,
+            write_project_terminal,
+            resize_project_terminal,
+            kill_project_terminal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1025,7 +1160,9 @@ end try"#,
             }
         }
 
-        Err(anyhow!("no supported folder picker is available on this system"))
+        Err(anyhow!(
+            "no supported folder picker is available on this system"
+        ))
     }
 
     #[cfg(target_os = "windows")]
@@ -1122,8 +1259,20 @@ fn should_skip_workspace_entry(name: &str) -> bool {
 
 fn is_supported_workspace_file(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|value| value.to_str()).unwrap_or_default(),
-        "ts" | "tsx" | "js" | "jsx" | "rs" | "json" | "md" | "css" | "html" | "toml" | "yml" | "yaml"
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default(),
+        "ts" | "tsx"
+            | "js"
+            | "jsx"
+            | "rs"
+            | "json"
+            | "md"
+            | "css"
+            | "html"
+            | "toml"
+            | "yml"
+            | "yaml"
     )
 }
 

@@ -15,6 +15,7 @@ import {
 } from './components/shell/MessageTimeline'
 import { GitBranchBlockedDialog } from './components/shell/GitBranchBlockedDialog'
 import { GitCommitDialog } from './components/shell/GitCommitDialog'
+import { TerminalDrawer } from './components/shell/TerminalDrawer'
 import {
   SettingsModal,
   type SettingsRow,
@@ -84,6 +85,8 @@ import {
   renameProject,
   setComposerRateLimitsVisible,
   setSidebarCollapsed,
+  setTerminalHeight,
+  setTerminalOpen,
   setThreadPreference,
   normalizeProjectRoot,
   upsertProject,
@@ -418,6 +421,27 @@ function App() {
     snapshot.session.cwd,
     snapshot.session.repo,
   ])
+  const terminalProjectRoot = useMemo(() => {
+    const explicitRoot =
+      activeProjectViewRoot ||
+      activeThread?.repo ||
+      activeThread?.cwd ||
+      snapshot.session.repo ||
+      snapshot.session.cwd ||
+      mostRecentProjectRoot(workspaceStore)
+
+    return explicitRoot ? normalizeProjectRoot(explicitRoot) : null
+  }, [
+    activeProjectViewRoot,
+    activeThread?.cwd,
+    activeThread?.repo,
+    snapshot.session.cwd,
+    snapshot.session.repo,
+    workspaceStore.projects,
+  ])
+  const terminalAvailable = Boolean(terminalProjectRoot)
+  const terminalOpen = workspaceStore.ui.terminalOpen && terminalAvailable
+  const terminalHeight = workspaceStore.ui.terminalHeight
 
   const activeProjectLabel = useMemo(() => {
     const saved = workspaceStore.projects.find(
@@ -889,6 +913,12 @@ function App() {
       setPanelMode(null)
     }
   }, [changesCount, panelMode])
+
+  useEffect(() => {
+    if (!terminalAvailable && workspaceStore.ui.terminalOpen) {
+      setWorkspaceStore((current) => setTerminalOpen(current, false))
+    }
+  }, [terminalAvailable, workspaceStore.ui.terminalOpen])
 
   useEffect(() => {
     if (activeProjectViewRoot) {
@@ -2002,6 +2032,17 @@ function App() {
     setPanelMode((current) => (current === 'diagnostics' ? null : 'diagnostics'))
   }
 
+  function handleToggleTerminal() {
+    if (!terminalAvailable) {
+      return
+    }
+    setWorkspaceStore((current) => setTerminalOpen(current, !current.ui.terminalOpen))
+  }
+
+  function handleTerminalHeightChange(nextHeight: number) {
+    setWorkspaceStore((current) => setTerminalHeight(current, nextHeight))
+  }
+
   function handleClosePanel() {
     if (effectivePanelMode === 'approvals' && !panelMode) {
       setDismissedApprovals(true)
@@ -2150,6 +2191,8 @@ function App() {
             changesOpen={false}
             codeReady={false}
             codeOpen={false}
+            terminalReady={false}
+            terminalOpen={false}
             diagnosticsCount={0}
             diagnosticsOpen={false}
             onToggleSidebar={() => {}}
@@ -2157,6 +2200,7 @@ function App() {
             onGoForward={() => {}}
             onToggleChanges={() => {}}
             onToggleCode={() => {}}
+            onToggleTerminal={() => {}}
             onToggleDiagnostics={() => {}}
           />
 
@@ -2211,6 +2255,8 @@ function App() {
           changesOpen={effectivePanelMode === 'changes'}
           codeReady={codeReady}
           codeOpen={effectivePanelMode === 'code'}
+          terminalReady={terminalAvailable}
+          terminalOpen={terminalOpen}
           diagnosticsCount={diagnosticsCount}
           diagnosticsOpen={effectivePanelMode === 'diagnostics'}
           commitReady={Boolean(projectGit && (composerGitSummary.fileCount > 0 || gitCanPush))}
@@ -2220,10 +2266,12 @@ function App() {
           onGoForward={() => void handleHistoryNavigation(1)}
           onToggleChanges={handleToggleChanges}
           onToggleCode={handleToggleCode}
+          onToggleTerminal={handleToggleTerminal}
           onToggleDiagnostics={handleToggleDiagnostics}
         />
 
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-1 overflow-hidden">
           <Sidebar
             collapsed={sidebarCollapsed}
             activeUtility={activeCatalogTab ? 'plugins' : null}
@@ -2374,6 +2422,15 @@ function App() {
                     />
                   </>
                 </ThreadViewTransition>
+
+                <TerminalDrawer
+                  open={terminalOpen}
+                  projectRoot={terminalProjectRoot}
+                  projectLabel={activeProjectLabel}
+                  height={terminalHeight}
+                  onHeightChange={handleTerminalHeightChange}
+                  onToggleOpen={handleToggleTerminal}
+                />
               </div>
 
               <InspectorPanel
@@ -2433,6 +2490,7 @@ function App() {
               />
             </div>
           )}
+          </div>
         </div>
       </div>
 

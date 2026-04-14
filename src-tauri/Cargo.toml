@@ -25,3 +25,4 @@ kodeks-core = { path = "../crates/kodeks-core" }
 tokio.workspace = true
 toml = "0.8"
 serde_yaml = "0.9"
+portable-pty = "0.9"
