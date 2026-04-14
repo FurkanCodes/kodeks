@@ -9,6 +9,7 @@ import {
   PinIcon,
   SidebarCollapseIcon,
   SidebarExpandIcon,
+  SquarePenIcon,
   TerminalIcon,
 } from './icons'
 
@@ -29,6 +30,8 @@ type TopBarProps = {
   changesOpen: boolean
   codeReady: boolean
   codeOpen: boolean
+  terminalReady: boolean
+  terminalOpen: boolean
   diagnosticsCount: number
   diagnosticsOpen: boolean
   commitReady?: boolean
@@ -38,6 +41,7 @@ type TopBarProps = {
   onGoForward: () => void
   onToggleChanges: () => void
   onToggleCode: () => void
+  onToggleTerminal: () => void
   onToggleDiagnostics: () => void
 }
 
@@ -55,14 +59,24 @@ function WindowIconButton(props: {
       onClick={props.onClick}
       disabled={props.disabled}
       title={props.label}
-      className={`flex size-8 items-center justify-center rounded-[10px] text-[color:var(--color-shell-faint)] transition ${
+      aria-label={props.label}
+      className={`group relative flex size-8 items-center justify-center rounded-[10px] text-[color:var(--color-shell-faint)] transition ${
         props.disabled
           ? 'cursor-not-allowed bg-transparent text-neutral-600'
           : 'hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
       }`}
     >
       <Icon className="h-3.25 w-3.25" />
+      <TooltipLabel label={props.label} />
     </button>
+  )
+}
+
+function TooltipLabel(props: { label: string }) {
+  return (
+    <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 -translate-x-1/2 whitespace-nowrap rounded-[8px] border border-white/12 bg-[#0b0d11] px-2 py-1 text-[11px] font-medium tracking-[-0.01em] text-neutral-200 opacity-0 shadow-[0_8px_26px_rgba(0,0,0,0.35)] transition group-hover:opacity-100 group-focus-visible:opacity-100">
+      {props.label}
+    </span>
   )
 }
 
@@ -81,40 +95,48 @@ function HeaderToggle(props: {
       type="button"
       onClick={props.onClick}
       disabled={props.disabled}
-      title={props.label}
-      className={`flex h-8 items-center gap-1.5 rounded-[10px] px-3 text-[12.5px] font-medium tracking-[-0.015em] transition ${
+      title={props.count > 0 ? `${props.label} (${props.count})` : props.label}
+      aria-label={props.count > 0 ? `${props.label} (${props.count})` : props.label}
+      className={`group relative flex size-8 items-center justify-center rounded-[10px] transition ${
         props.active
           ? 'bg-[color:var(--color-shell-control)] text-[color:var(--color-shell-primary)]'
           : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
       } ${props.disabled ? 'cursor-not-allowed opacity-60 hover:bg-transparent hover:text-[color:var(--color-shell-muted)]' : ''}`}
     >
       <Icon className="h-3.25 w-3.25" />
-      <span>{props.label}</span>
-      <span className="shell-tabular text-[11px] text-[color:var(--color-shell-faint)]">
-        {props.count}
-      </span>
+      {props.count > 0 ? (
+        <span className="shell-tabular absolute -right-1 -top-1 rounded-full bg-white/14 px-1 text-[9px] leading-[1.2] text-[color:var(--color-shell-primary)]">
+          {props.count}
+        </span>
+      ) : null}
+      <TooltipLabel label={props.count > 0 ? `${props.label} (${props.count})` : props.label} />
     </button>
   )
 }
 
 function HeaderAction(props: {
+  icon: typeof SquarePenIcon
   label: string
   disabled?: boolean
   onClick?: () => void
 }) {
+  const Icon = props.icon
+
   return (
     <button
       type="button"
       onClick={props.onClick}
       disabled={props.disabled}
       title={props.label}
-      className={`flex h-8 items-center rounded-[10px] px-3 text-[12.5px] font-medium tracking-[-0.015em] transition ${
+      aria-label={props.label}
+      className={`group relative flex size-8 items-center justify-center rounded-[10px] transition ${
         props.disabled
           ? 'cursor-not-allowed text-neutral-600'
           : 'text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)]'
       }`}
     >
-      <span>{props.label}</span>
+      <Icon className="h-3.25 w-3.25" />
+      <TooltipLabel label={props.label} />
     </button>
   )
 }
@@ -125,29 +147,33 @@ function RunStatePill(props: { state: TopBarRunState }) {
       ? {
           label: 'Busy',
           dotClass: 'bg-amber-300',
-          textClass: 'text-amber-100',
-          surfaceClass: 'bg-amber-300/[0.1]',
+          ringClass: 'ring-amber-300/30',
+          surfaceClass: 'bg-amber-300/[0.16]',
         }
       : props.state === 'done'
         ? {
             label: 'Ready',
             dotClass: 'bg-emerald-300',
-            textClass: 'text-emerald-100',
-          surfaceClass: 'bg-emerald-300/[0.12]',
+            ringClass: 'ring-emerald-300/30',
+            surfaceClass: 'bg-emerald-300/[0.18]',
         }
       : {
           label: 'Idle',
           dotClass: 'bg-[color:var(--color-shell-faint)]',
-          textClass: 'text-[color:var(--color-shell-muted)]',
+          ringClass: 'ring-white/10',
           surfaceClass: 'bg-[color:var(--color-shell-control)]',
         }
 
   return (
-    <div
-      className={`flex h-8 items-center gap-2 rounded-[10px] px-3 text-[12.5px] font-medium tracking-[-0.015em] ${status.surfaceClass} ${status.textClass}`}
-    >
-      <span className={`size-1.5 rounded-full ${status.dotClass}`} />
-      <span>{status.label}</span>
+    <div className="group relative">
+      <div
+        title={status.label}
+        aria-label={status.label}
+        className={`flex size-8 items-center justify-center rounded-[10px] ring-1 ${status.ringClass} ${status.surfaceClass}`}
+      >
+        <span className={`size-1.5 rounded-full ${status.dotClass}`} />
+      </div>
+      <TooltipLabel label={status.label} />
     </div>
   )
 }
@@ -215,7 +241,7 @@ export function TopBar(props: TopBarProps) {
 
   if (props.minimal) {
     return (
-      <header className="flex h-11 shrink-0 items-center bg-[#0f1115]/94 px-3 text-neutral-200 shadow-[inset_0_-1px_0_rgba(255,255,255,0.035)] backdrop-blur-[18px]">
+      <header className="relative z-30 flex h-11 shrink-0 items-center bg-[#0f1115]/94 px-3 text-neutral-200 shadow-[inset_0_-1px_0_rgba(255,255,255,0.035)] backdrop-blur-[18px]">
         {props.isMacOs ? <DragRegion enabled className="h-full w-[84px] shrink-0" /> : null}
         <DragRegion
           enabled={props.isMacOs}
@@ -230,7 +256,7 @@ export function TopBar(props: TopBarProps) {
   }
 
   return (
-    <header className="flex h-11 shrink-0 items-center justify-between bg-[#0f1115]/94 px-3 text-neutral-200 shadow-[inset_0_-1px_0_rgba(255,255,255,0.035)] backdrop-blur-[18px]">
+    <header className="relative z-30 flex h-11 shrink-0 items-center justify-between bg-[#0f1115]/94 px-3 text-neutral-200 shadow-[inset_0_-1px_0_rgba(255,255,255,0.035)] backdrop-blur-[18px]">
       <div className="flex min-w-0 flex-1 items-center">
         {props.isMacOs ? <DragRegion enabled className="h-full w-[84px] shrink-0" /> : null}
 
@@ -271,6 +297,7 @@ export function TopBar(props: TopBarProps) {
         <div className="mx-1 hidden h-4 w-px bg-[color:var(--color-shell-divider)] lg:block" />
         {props.onOpenCommit ? (
           <HeaderAction
+            icon={SquarePenIcon}
             label="Commit"
             disabled={!props.commitReady}
             onClick={props.onOpenCommit}
@@ -294,10 +321,11 @@ export function TopBar(props: TopBarProps) {
         />
         <HeaderToggle
           icon={TerminalIcon}
-          label="Diagnostics"
-          count={props.diagnosticsCount}
-          active={props.diagnosticsOpen}
-          onClick={props.onToggleDiagnostics}
+          label="Terminal"
+          count={0}
+          active={props.terminalOpen}
+          disabled={!props.terminalReady}
+          onClick={props.onToggleTerminal}
         />
       </div>
     </header>

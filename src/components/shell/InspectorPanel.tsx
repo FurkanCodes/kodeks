@@ -5,6 +5,7 @@ import type {
   ApprovalFileChange,
   DiagnosticTrace,
   DiagnosticWarning,
+  OpenWithTarget,
 } from '../../lib/kodeks'
 import { ChevronIcon, CloseIcon, DiffAddIcon, DiffRemoveIcon, FileCodeIcon } from './icons'
 
@@ -28,6 +29,7 @@ type InspectorPanelProps = {
   open: boolean
   mode: DrawerMode
   overlay?: boolean
+  width?: number
   badgeLabel: string
   diffFiles: DiffFileView[]
   hiddenDiffFilesCount?: number
@@ -39,6 +41,7 @@ type InspectorPanelProps = {
   codePath: string | null
   codeBreadcrumbs: string[]
   codeContent: string
+  codeChangedLines?: ReadonlySet<number>
   codeLanguage?: string
   approvals: ApprovalEntry[]
   warnings: DiagnosticWarning[]
@@ -50,6 +53,9 @@ type InspectorPanelProps = {
   onViewCode?: () => void
   onShowChanges?: () => void
   onOpenFile?: () => void
+  onOpenFileWith?: (targetId: string) => void
+  openFileTargets?: OpenWithTarget[]
+  openFileTargetsLoading?: boolean
   onApprove: (approval: ApprovalEntry, decision: string) => void
   onExportDiagnostics: () => void
 }
@@ -221,6 +227,60 @@ function renderDecisionButtons(
         </button>
       ))}
     </div>
+  )
+}
+
+function OpenWithMenu(props: {
+  disabled: boolean
+  loading?: boolean
+  targets?: OpenWithTarget[]
+  onSelect?: (targetId: string) => void
+}) {
+  const targets =
+    props.targets && props.targets.length > 0
+      ? props.targets
+      : [{ id: 'default', label: 'Default app' }]
+
+  if (props.disabled || !props.onSelect) {
+    return (
+      <button
+        type="button"
+        disabled
+        className="ml-auto rounded-[4px] border border-white/10 px-3 py-1.5 text-[12.5px] font-medium text-neutral-300 opacity-50"
+      >
+        Open with
+      </button>
+    )
+  }
+
+  return (
+    <details className="relative ml-auto">
+      <summary className="list-none cursor-pointer rounded-[4px] border border-white/10 px-3 py-1.5 text-[12.5px] font-medium text-neutral-300 transition hover:border-white/20 hover:text-white">
+        Open with
+      </summary>
+      <div className="absolute bottom-full right-0 z-20 mb-2 min-w-[13rem] overflow-hidden rounded-[8px] border border-white/10 bg-[#0a0c10] shadow-[0_14px_32px_rgba(0,0,0,0.45)]">
+        {props.loading ? (
+          <div className="px-3 py-2 text-[12px] text-neutral-400">Loading apps...</div>
+        ) : (
+          targets.map((target) => (
+            <button
+              type="button"
+              key={target.id}
+              className="block w-full px-3 py-2 text-left text-[12.5px] text-neutral-300 transition hover:bg-white/7 hover:text-white"
+              onClick={(event) => {
+                props.onSelect?.(target.id)
+                const details = event.currentTarget.closest('details') as HTMLDetailsElement | null
+                if (details) {
+                  details.open = false
+                }
+              }}
+            >
+              {target.label}
+            </button>
+          ))
+        )}
+      </div>
+    </details>
   )
 }
 
@@ -424,7 +484,7 @@ function renderApprovalCard(
   return renderGenericApprovalCard(approval, onApprove)
 }
 
-function CodeTokenLine(props: { text: string; lineNumber: number; language?: string }) {
+function CodeTokenLine(props: { text: string; lineNumber: number; changed?: boolean; language?: string }) {
   const commentIndex =
     props.language === 'css'
       ? props.text.indexOf('/*')
@@ -457,10 +517,23 @@ function CodeTokenLine(props: { text: string; lineNumber: number; language?: str
   })
 
   return (
-    <div className="flex items-start gap-0">
-      <span className="w-9 shrink-0 select-none px-2 pl-4 text-right text-[12px] text-[#525252]">
+    <div
+      className="flex items-start gap-0"
+      style={{ background: props.changed ? 'rgba(74,222,128,0.07)' : 'transparent' }}
+    >
+      <span
+        className="w-9 shrink-0 select-none px-2 pl-4 text-right text-[12px]"
+        style={{ color: props.changed ? '#4ade80' : '#525252' }}
+      >
         {props.lineNumber}
       </span>
+      <span
+        className="shrink-0"
+        style={{
+          width: '2px',
+          background: props.changed ? 'rgba(74,222,128,0.7)' : 'transparent',
+        }}
+      />
       <span className="shell-cousine flex-1 whitespace-pre px-3 text-[13px] leading-[1.7] text-[#d4d4d4]">
         {renderCode}
         {comment ? <span className="text-[#737373]">{comment}</span> : null}
@@ -788,7 +861,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
     <aside
       className={`flex h-full shrink-0 flex-col ${props.overlay ? 'w-full max-w-[min(27.5rem,calc(100vw-1.5rem))]' : ''}`}
       style={{
-        width: props.overlay ? undefined : '440px',
+        width: props.overlay ? undefined : `${props.width ?? 440}px`,
         background: '#09090b',
         borderLeft: '1px solid rgba(255,255,255,0.055)',
       }}
@@ -867,14 +940,12 @@ export function InspectorPanel(props: InspectorPanelProps) {
                 >
                   View code
                 </button>
-                <button
-                  type="button"
-                  className="ml-auto rounded-[4px] border border-white/10 px-3 py-1.5 text-[12.5px] font-medium text-neutral-300 transition hover:border-white/20 hover:text-white disabled:cursor-default disabled:opacity-50"
-                  onClick={props.onOpenFile}
-                  disabled={!props.onOpenFile || !props.selectedPath}
-                >
-                  Open externally
-                </button>
+                <OpenWithMenu
+                  disabled={!props.selectedPath}
+                  loading={props.openFileTargetsLoading}
+                  targets={props.openFileTargets}
+                  onSelect={props.onOpenFileWith}
+                />
               </div>
             </>
           ) : (
@@ -911,6 +982,7 @@ export function InspectorPanel(props: InspectorPanelProps) {
                     key={`${props.codePath}-${index}`}
                     lineNumber={index + 1}
                     text={line}
+                    changed={props.codeChangedLines?.has(index + 1)}
                     language={props.codeLanguage}
                   />
                 ))
@@ -928,14 +1000,12 @@ export function InspectorPanel(props: InspectorPanelProps) {
             >
               Show changes
             </button>
-            <button
-              type="button"
-              className="ml-auto rounded-[4px] border border-white/10 px-3 py-1.5 text-[12.5px] font-medium text-neutral-300 transition hover:border-white/20 hover:text-white disabled:cursor-default disabled:opacity-50"
-              onClick={props.onOpenFile}
-              disabled={!props.onOpenFile || !props.codePath}
-            >
-              Open externally
-            </button>
+            <OpenWithMenu
+              disabled={!props.codePath}
+              loading={props.openFileTargetsLoading}
+              targets={props.openFileTargets}
+              onSelect={props.onOpenFileWith}
+            />
           </div>
         </>
       ) : null}

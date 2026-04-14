@@ -1,4 +1,5 @@
 @import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+@import "@xterm/xterm/css/xterm.css";
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark *));
@@ -270,6 +271,22 @@
 }
 
 .shell-scroll-none::-webkit-scrollbar {
+  display: none;
+}
+
+.xterm {
+  height: 100%;
+}
+
+.xterm .xterm-screen canvas {
+  image-rendering: optimizeQuality;
+}
+
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar {
   display: none;
 }
 

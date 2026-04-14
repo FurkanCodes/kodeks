@@ -31,6 +31,8 @@ export type SidebarAccount = {
 
 type SidebarProps = {
   collapsed: boolean
+  expandedWidth?: number
+  collapsedWidth?: number
   activeUtility?: 'plugins' | 'skills' | null
   groups: SidebarGroup[]
   archivedThreads: SidebarThread[]
@@ -450,7 +452,10 @@ export function Sidebar(props: SidebarProps) {
   if (props.collapsed) {
     return (
       <LazyMotion features={domAnimation}>
-        <aside className="relative flex h-full w-[72px] shrink-0 flex-col items-center bg-[color:var(--color-shell-panel)] py-3 shadow-[inset_-1px_0_0_rgba(255,255,255,0.035)] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+        <aside
+          className="relative flex h-full shrink-0 flex-col items-center bg-[color:var(--color-shell-panel)] py-3 shadow-[inset_-1px_0_0_rgba(255,255,255,0.035)] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+          style={{ width: `${props.collapsedWidth ?? 72}px` }}
+        >
           <div className="flex flex-col items-center gap-2">
             <div className="flex size-10 items-center justify-center rounded-[12px] bg-[color:var(--color-shell-control)]">
               <span className="text-[11px] font-bold leading-none text-[color:var(--color-shell-primary)]">◆</span>
@@ -494,7 +499,10 @@ export function Sidebar(props: SidebarProps) {
 
   return (
     <LazyMotion features={domAnimation}>
-      <aside className="relative flex h-full w-[304px] shrink-0 flex-col bg-[color:var(--color-shell-panel)] shadow-[inset_-1px_0_0_rgba(255,255,255,0.035)] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+      <aside
+        className="relative flex h-full shrink-0 flex-col bg-[color:var(--color-shell-panel)] shadow-[inset_-1px_0_0_rgba(255,255,255,0.035)] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+        style={{ width: `${props.expandedWidth ?? 304}px` }}
+      >
         <div className="space-y-1 px-3 pb-3 pt-4">
           <SidebarUtilityButton
             label="New chat"

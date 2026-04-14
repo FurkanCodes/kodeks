@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context, Result as AnyhowResult};
 use kodeks_core::{
     ModelOption, RuntimeHandle, SessionSnapshot, ThreadConfigOverride, UserInputItem,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use tauri::{Emitter, Manager, State};
 use workspace_store::WorkspaceStorePayload;
@@ -698,6 +698,34 @@ async fn open_workspace_file(base_dir: String, relative_path: String) -> Result<
     open_in_system_editor(&resolved).map_err(|error| error.to_string())
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenWithTargetPayload {
+    id: String,
+    label: String,
+}
+
+#[tauri::command]
+async fn list_open_with_targets(
+    base_dir: String,
+    relative_path: String,
+) -> Result<Vec<OpenWithTargetPayload>, String> {
+    let resolved =
+        resolve_workspace_path(&base_dir, &relative_path).map_err(|error| error.to_string())?;
+    Ok(list_open_with_targets_for_path(&resolved))
+}
+
+#[tauri::command]
+async fn open_workspace_file_with(
+    base_dir: String,
+    relative_path: String,
+    target_id: String,
+) -> Result<(), String> {
+    let resolved =
+        resolve_workspace_path(&base_dir, &relative_path).map_err(|error| error.to_string())?;
+    open_workspace_path_with_target(&resolved, &target_id).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn open_external_url(url: String) -> Result<(), String> {
     let trimmed = url.trim();
@@ -1001,6 +1029,8 @@ pub fn run() {
             list_workspace_files,
             read_workspace_file,
             open_workspace_file,
+            list_open_with_targets,
+            open_workspace_file_with,
             open_external_url,
             save_pasted_image,
             get_git_project,
@@ -1058,7 +1088,7 @@ fn resolve_workspace_root(base_dir: &str) -> AnyhowResult<PathBuf> {
         .with_context(|| format!("failed to resolve workspace root {}", base_dir))
 }
 
-fn open_in_system_editor(path: &PathBuf) -> AnyhowResult<()> {
+fn open_in_system_editor(path: &Path) -> AnyhowResult<()> {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = Command::new("open");
@@ -1083,6 +1113,226 @@ fn open_in_system_editor(path: &PathBuf) -> AnyhowResult<()> {
     command
         .spawn()
         .with_context(|| format!("failed to open {}", path.display()))?;
+    Ok(())
+}
+
+fn list_open_with_targets_for_path(_path: &Path) -> Vec<OpenWithTargetPayload> {
+    let mut targets = vec![OpenWithTargetPayload {
+        id: "default".to_string(),
+        label: "Default app".to_string(),
+    }];
+
+    #[cfg(target_os = "macos")]
+    {
+        targets.push(OpenWithTargetPayload {
+            id: "finder".to_string(),
+            label: "Finder".to_string(),
+        });
+
+        for (id, label, app_name) in [
+            ("vscode", "Visual Studio Code", "Visual Studio Code"),
+            ("cursor", "Cursor", "Cursor"),
+            ("zed", "Zed", "Zed"),
+            ("sublime", "Sublime Text", "Sublime Text"),
+            ("xcode", "Xcode", "Xcode"),
+            ("textedit", "TextEdit", "TextEdit"),
+        ] {
+            if macos_app_available(app_name) {
+                targets.push(OpenWithTargetPayload {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                });
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        targets.push(OpenWithTargetPayload {
+            id: "explorer".to_string(),
+            label: "File Explorer".to_string(),
+        });
+        targets.push(OpenWithTargetPayload {
+            id: "notepad".to_string(),
+            label: "Notepad".to_string(),
+        });
+        if command_is_available("code") {
+            targets.push(OpenWithTargetPayload {
+                id: "vscode".to_string(),
+                label: "Visual Studio Code".to_string(),
+            });
+        }
+        if command_is_available("cursor") {
+            targets.push(OpenWithTargetPayload {
+                id: "cursor".to_string(),
+                label: "Cursor".to_string(),
+            });
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        targets.push(OpenWithTargetPayload {
+            id: "file-manager".to_string(),
+            label: "File Manager".to_string(),
+        });
+        for (id, label, command) in [
+            ("vscode", "Visual Studio Code", "code"),
+            ("cursor", "Cursor", "cursor"),
+            ("zed", "Zed", "zed"),
+            ("gedit", "gedit", "gedit"),
+        ] {
+            if command_is_available(command) {
+                targets.push(OpenWithTargetPayload {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                });
+            }
+        }
+    }
+
+    targets
+}
+
+fn open_workspace_path_with_target(path: &Path, target_id: &str) -> AnyhowResult<()> {
+    if target_id.trim().is_empty() || target_id == "default" {
+        return open_in_system_editor(path);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        match target_id {
+            "finder" => {
+                Command::new("open")
+                    .arg("-R")
+                    .arg(path)
+                    .spawn()
+                    .with_context(|| format!("failed to reveal {} in Finder", path.display()))?;
+                return Ok(());
+            }
+            "vscode" => return open_in_macos_app(path, "Visual Studio Code"),
+            "cursor" => return open_in_macos_app(path, "Cursor"),
+            "zed" => return open_in_macos_app(path, "Zed"),
+            "sublime" => return open_in_macos_app(path, "Sublime Text"),
+            "xcode" => return open_in_macos_app(path, "Xcode"),
+            "textedit" => return open_in_macos_app(path, "TextEdit"),
+            _ => {
+                return Err(anyhow!("unknown open target: {target_id}"));
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        match target_id {
+            "explorer" => {
+                Command::new("explorer")
+                    .arg(format!("/select,{}", path.display()))
+                    .spawn()
+                    .with_context(|| format!("failed to reveal {} in Explorer", path.display()))?;
+                return Ok(());
+            }
+            "notepad" => {
+                Command::new("notepad")
+                    .arg(path)
+                    .spawn()
+                    .with_context(|| format!("failed to open {} in Notepad", path.display()))?;
+                return Ok(());
+            }
+            "vscode" => {
+                Command::new("code")
+                    .args(["-g", &path.to_string_lossy()])
+                    .spawn()
+                    .with_context(|| format!("failed to open {} in VS Code", path.display()))?;
+                return Ok(());
+            }
+            "cursor" => {
+                Command::new("cursor")
+                    .arg(path)
+                    .spawn()
+                    .with_context(|| format!("failed to open {} in Cursor", path.display()))?;
+                return Ok(());
+            }
+            _ => {
+                return Err(anyhow!("unknown open target: {target_id}"));
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        match target_id {
+            "file-manager" => {
+                Command::new("xdg-open")
+                    .arg(path.parent().unwrap_or(path))
+                    .spawn()
+                    .with_context(|| format!("failed to reveal {} in file manager", path.display()))?;
+                return Ok(());
+            }
+            "vscode" => {
+                Command::new("code")
+                    .args(["-g", &path.to_string_lossy()])
+                    .spawn()
+                    .with_context(|| format!("failed to open {} in VS Code", path.display()))?;
+                return Ok(());
+            }
+            "cursor" => {
+                Command::new("cursor")
+                    .arg(path)
+                    .spawn()
+                    .with_context(|| format!("failed to open {} in Cursor", path.display()))?;
+                return Ok(());
+            }
+            "zed" => {
+                Command::new("zed")
+                    .arg(path)
+                    .spawn()
+                    .with_context(|| format!("failed to open {} in Zed", path.display()))?;
+                return Ok(());
+            }
+            "gedit" => {
+                Command::new("gedit")
+                    .arg(path)
+                    .spawn()
+                    .with_context(|| format!("failed to open {} in gedit", path.display()))?;
+                return Ok(());
+            }
+            _ => {
+                return Err(anyhow!("unknown open target: {target_id}"));
+            }
+        }
+    }
+
+    #[allow(unreachable_code)]
+    Err(anyhow!("open-with is not supported on this platform"))
+}
+
+fn command_is_available(command: &str) -> bool {
+    Command::new(command).arg("--version").output().is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_available(app_name: &str) -> bool {
+    let app_bundle = format!("{app_name}.app");
+    let system_path = PathBuf::from("/Applications").join(&app_bundle);
+    if system_path.exists() {
+        return true;
+    }
+
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Applications").join(app_bundle).exists())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn open_in_macos_app(path: &Path, app_name: &str) -> AnyhowResult<()> {
+    Command::new("open")
+        .arg("-a")
+        .arg(app_name)
+        .arg(path)
+        .spawn()
+        .with_context(|| format!("failed to open {} in {}", path.display(), app_name))?;
     Ok(())
 }
 

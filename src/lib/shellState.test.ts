@@ -35,7 +35,11 @@ function makeStore(): WorkspaceStore {
     threadPreferences: {},
     ui: {
       sidebarCollapsed: false,
+      sidebarWidth: 304,
+      inspectorWidth: 440,
       showComposerRateLimits: true,
+      terminalOpen: false,
+      terminalHeight: 280,
     },
   }
 }
@@ -168,7 +172,11 @@ test('buildSidebarGroups merges saved project roots with thread roots when only 
       threadPreferences: {},
       ui: {
         sidebarCollapsed: false,
+        sidebarWidth: 304,
+        inspectorWidth: 440,
         showComposerRateLimits: true,
+        terminalOpen: false,
+        terminalHeight: 280,
       },
     },
     '/work/drumkit/',

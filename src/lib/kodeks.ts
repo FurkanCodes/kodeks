@@ -318,6 +318,11 @@ export type ProjectTerminalExitEvent = {
   reason?: string | null
 }
 
+export type OpenWithTarget = {
+  id: string
+  label: string
+}
+
 export type GitCommitRequest = {
   subject: string
   body?: string | null
@@ -496,6 +501,14 @@ export async function readWorkspaceFile(baseDir: string, relativePath: string) {
 
 export async function openWorkspaceFile(baseDir: string, relativePath: string) {
   return invoke<void>('open_workspace_file', { baseDir, relativePath })
+}
+
+export async function listOpenWithTargets(baseDir: string, relativePath: string) {
+  return invoke<OpenWithTarget[]>('list_open_with_targets', { baseDir, relativePath })
+}
+
+export async function openWorkspaceFileWith(baseDir: string, relativePath: string, targetId: string) {
+  return invoke<void>('open_workspace_file_with', { baseDir, relativePath, targetId })
 }
 
 export async function openExternalUrl(url: string) {

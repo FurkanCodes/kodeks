@@ -46,9 +46,12 @@ import {
   listWorkspaceFiles,
   loginChatgpt,
   logout,
+  listOpenWithTargets,
   onSnapshot,
+  openWorkspaceFileWith,
   openExternalUrl,
   openWorkspaceFile,
+  type OpenWithTarget,
   pickWorkspaceFolder,
   type RateLimitBucketView,
   type RateLimitsView,
@@ -85,6 +88,8 @@ import {
   renameProject,
   setComposerRateLimitsVisible,
   setSidebarCollapsed,
+  setSidebarWidth,
+  setInspectorWidth,
   setTerminalHeight,
   setTerminalOpen,
   setThreadPreference,
@@ -252,6 +257,24 @@ type ShellHistoryState = {
   index: number
 }
 
+type PanelResizeState =
+  | {
+      target: 'sidebar'
+      startX: number
+      startWidth: number
+    }
+  | {
+      target: 'inspector'
+      startX: number
+      startWidth: number
+    }
+
+const SIDEBAR_COLLAPSED_WIDTH = 72
+const SIDEBAR_RESIZE_MIN = 248
+const SIDEBAR_RESIZE_MAX = 420
+const INSPECTOR_RESIZE_MIN = 340
+const INSPECTOR_RESIZE_MAX = 760
+
 const THREAD_VIEW_FADE_IN_EASE = [0.16, 1, 0.3, 1] as const
 const THREAD_VIEW_FADE_OUT_EASE = [0.7, 0, 0.84, 0] as const
 
@@ -359,6 +382,8 @@ function App() {
   const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null)
   const [selectedCodePath, setSelectedCodePath] = useState<string | null>(null)
   const [selectedCodeContent, setSelectedCodeContent] = useState('')
+  const [openWithTargets, setOpenWithTargets] = useState<OpenWithTarget[]>([])
+  const [openWithTargetsLoading, setOpenWithTargetsLoading] = useState(false)
   const [showHiddenDiffFiles, setShowHiddenDiffFiles] = useState(false)
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null)
   const [dismissedApprovals, setDismissedApprovals] = useState(false)
@@ -370,6 +395,9 @@ function App() {
   const [coarsePointer, setCoarsePointer] = useState(() =>
     typeof window === 'undefined' ? false : window.matchMedia('(pointer: coarse)').matches,
   )
+  const [activePanelResize, setActivePanelResize] = useState<PanelResizeState | null>(null)
+  const [dragSidebarWidth, setDragSidebarWidth] = useState<number | null>(null)
+  const [dragInspectorWidth, setDragInspectorWidth] = useState<number | null>(null)
 
   useEffect(() => {
     composerAttachmentsRef.current = composerAttachments
@@ -586,6 +614,28 @@ function App() {
     () => (selectedCodePath ? selectedCodePath.split('/').filter(Boolean) : []),
     [selectedCodePath],
   )
+  const codeChangedLines = useMemo(() => {
+    if (!selectedCodePath) {
+      return new Set<number>()
+    }
+
+    const normalizedCodePath =
+      normalizeWorkspacePathForProject(selectedCodePath, currentProjectRoot) || selectedCodePath
+    const sourceFiles = activeProjectViewRoot ? projectParsedDiffFiles : threadParsedDiffFiles
+    const diffFile =
+      sourceFiles.find((file) => {
+        const normalizedDiffPath = normalizeWorkspacePathForProject(file.path, currentProjectRoot) || file.path
+        return normalizedDiffPath === normalizedCodePath
+      }) || null
+
+    return diffFile ? buildChangedLineSetFromDiff(diffFile) : new Set<number>()
+  }, [
+    activeProjectViewRoot,
+    currentProjectRoot,
+    projectParsedDiffFiles,
+    selectedCodePath,
+    threadParsedDiffFiles,
+  ])
 
   const messageIdForActiveDiffTurn = useMemo(() => {
     const turnId = activeProjectViewRoot ? null : snapshot.active_diff?.turn_id
@@ -710,6 +760,25 @@ function App() {
 
   const effectivePanelMode =
     activeCatalogTab ? null : panelMode ?? (pendingApprovals.length > 0 && !dismissedApprovals ? 'approvals' : null)
+  const openWithPath = useMemo(() => {
+    const rawPath =
+      effectivePanelMode === 'code'
+        ? selectedCodePath
+        : effectivePanelMode === 'changes'
+          ? activeProjectViewRoot
+            ? selectedProjectGitPath
+            : selectedDiffFile?.path ?? null
+          : null
+
+    return normalizeWorkspacePathForProject(rawPath, currentProjectRoot)
+  }, [
+    activeProjectViewRoot,
+    currentProjectRoot,
+    effectivePanelMode,
+    selectedCodePath,
+    selectedDiffFile?.path,
+    selectedProjectGitPath,
+  ])
   const inspectorAsOverlay = viewportWidth < 1320
   const compactModelMenu = viewportWidth < 1120
   const touchModelPreview = coarsePointer
@@ -725,7 +794,6 @@ function App() {
   const diagnosticsWarnings = activeProjectViewRoot ? [] : snapshot.diagnostics.warnings
   const diagnosticsTraces = activeProjectViewRoot ? [] : snapshot.diagnostics.traces
   const diagnosticsCount = diagnosticsWarnings.length + diagnosticsTraces.length
-  const codeReady = Boolean(selectedCodePath || selectedDiffFile || (activeProjectViewRoot && selectedProjectGitPath))
 
   const settingsSections = useMemo(
     () =>
@@ -902,19 +970,6 @@ function App() {
   }, [pendingApprovals.length])
 
   useEffect(() => {
-    if (!activeProjectViewRoot || panelMode === null) {
-      return
-    }
-    setPanelMode(null)
-  }, [activeProjectViewRoot, panelMode])
-
-  useEffect(() => {
-    if (changesCount === 0 && panelMode === 'changes') {
-      setPanelMode(null)
-    }
-  }, [changesCount, panelMode])
-
-  useEffect(() => {
     if (!terminalAvailable && workspaceStore.ui.terminalOpen) {
       setWorkspaceStore((current) => setTerminalOpen(current, false))
     }
@@ -1017,6 +1072,57 @@ function App() {
       pointerQuery.removeEventListener('change', syncViewport)
     }
   }, [])
+
+  useEffect(() => {
+    if (!activePanelResize) {
+      return
+    }
+
+    const previousUserSelect = document.body.style.userSelect
+    const previousCursor = document.body.style.cursor
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (activePanelResize.target === 'sidebar') {
+        const nextWidth = clampSidebarPanelWidth(
+          activePanelResize.startWidth + (event.clientX - activePanelResize.startX),
+        )
+        setDragSidebarWidth(nextWidth)
+        return
+      }
+
+      const nextWidth = clampInspectorPanelWidth(
+        activePanelResize.startWidth + (activePanelResize.startX - event.clientX),
+      )
+      setDragInspectorWidth(nextWidth)
+    }
+
+    const handlePointerUp = () => {
+      if (activePanelResize.target === 'sidebar') {
+        const resolvedWidth = dragSidebarWidth ?? activePanelResize.startWidth
+        setWorkspaceStore((current) => setSidebarWidth(current, resolvedWidth))
+        setDragSidebarWidth(null)
+      } else {
+        const resolvedWidth = dragInspectorWidth ?? activePanelResize.startWidth
+        setWorkspaceStore((current) => setInspectorWidth(current, resolvedWidth))
+        setDragInspectorWidth(null)
+      }
+      setActivePanelResize(null)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+
+    return () => {
+      document.body.style.userSelect = previousUserSelect
+      document.body.style.cursor = previousCursor
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+    }
+  }, [activePanelResize, dragInspectorWidth, dragSidebarWidth])
 
   useEffect(() => {
     let disposed = false
@@ -1235,13 +1341,14 @@ function App() {
   ])
 
   useEffect(() => {
-    if (!selectedCodePath || !currentProjectRoot) {
+    const normalizedCodePath = normalizeWorkspacePathForProject(selectedCodePath, currentProjectRoot)
+    if (!normalizedCodePath || !currentProjectRoot) {
       setSelectedCodeContent('')
       return
     }
 
     let cancelled = false
-    const codePath = selectedCodePath
+    const codePath = normalizedCodePath
     const projectRoot = currentProjectRoot
 
     async function loadCode() {
@@ -1263,6 +1370,46 @@ function App() {
       cancelled = true
     }
   }, [currentProjectRoot, selectedCodePath])
+
+  useEffect(() => {
+    if (!openWithPath || !currentProjectRoot) {
+      setOpenWithTargets([])
+      setOpenWithTargetsLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const projectRoot = currentProjectRoot
+    const targetPath = openWithPath
+    setOpenWithTargetsLoading(true)
+
+    async function loadOpenWithTargets() {
+      try {
+        const targets = await listOpenWithTargets(projectRoot, targetPath)
+        if (!cancelled) {
+          setOpenWithTargets(targets)
+        }
+      } catch {
+        if (!cancelled) {
+          setOpenWithTargets([
+            {
+              id: 'default',
+              label: 'Default app',
+            },
+          ])
+        }
+      } finally {
+        if (!cancelled) {
+          setOpenWithTargetsLoading(false)
+        }
+      }
+    }
+
+    void loadOpenWithTargets()
+    return () => {
+      cancelled = true
+    }
+  }, [currentProjectRoot, openWithPath])
 
   useEffect(() => {
     if (!undoArchive) {
@@ -1973,22 +2120,40 @@ function App() {
     }
   }
 
-  async function handleOpenExternalFile(path?: string | null) {
-    const target = path || selectedCodePath || (activeProjectViewRoot ? selectedProjectGitPath : selectedDiffFile?.path)
-    if (!target) {
+  function resolveOpenWorkspaceTarget(path?: string | null) {
+    return (
+      path ||
+      selectedCodePath ||
+      (activeProjectViewRoot ? selectedProjectGitPath : selectedDiffFile?.path) ||
+      null
+    )
+  }
+
+  async function handleOpenFileWithTarget(targetId: string, path?: string | null) {
+    if (!currentProjectRoot) {
+      return
+    }
+
+    const target = resolveOpenWorkspaceTarget(path)
+    const normalizedTarget = normalizeWorkspacePathForProject(target, currentProjectRoot)
+    if (!normalizedTarget) {
       return
     }
 
     setError(null)
     try {
-      await openWorkspaceFile(currentProjectRoot, target)
+      await openWorkspaceFileWith(currentProjectRoot, normalizedTarget, targetId)
     } catch (nextError) {
       setError(stringifyError(nextError))
     }
   }
 
+  async function handleOpenExternalFile(path?: string | null) {
+    await handleOpenFileWithTarget('default', path)
+  }
+
   function handleOpenCodePath(path: string) {
-    setSelectedCodePath(path)
+    setSelectedCodePath(normalizeWorkspacePathForProject(path, currentProjectRoot) || path)
     setPanelMode('code')
   }
 
@@ -2002,9 +2167,6 @@ function App() {
   }
 
   function handleToggleChanges() {
-    if (changesCount === 0) {
-      return
-    }
     if (activeProjectViewRoot && !selectedProjectGitPath) {
       const fallback = projectGit?.files[0]
       if (fallback) {
@@ -2021,9 +2183,6 @@ function App() {
     }
     if (!selectedCodePath && selectedDiffFile) {
       setSelectedCodePath(selectedDiffFile.path)
-    }
-    if (!selectedCodePath && !selectedDiffFile && !(activeProjectViewRoot && selectedProjectGitPath)) {
-      return
     }
     setPanelMode((current) => (current === 'code' ? null : 'code'))
   }
@@ -2146,6 +2305,10 @@ function App() {
   const canGoBack = backHistoryIndex !== -1
   const canGoForward = forwardHistoryIndex !== -1
   const sidebarCollapsed = workspaceStore.ui.sidebarCollapsed
+  const sidebarWidth = sidebarCollapsed
+    ? SIDEBAR_COLLAPSED_WIDTH
+    : dragSidebarWidth ?? workspaceStore.ui.sidebarWidth
+  const inspectorWidth = dragInspectorWidth ?? workspaceStore.ui.inspectorWidth
   const activeSidebarAccount = sidebarAccounts.find((account) => account.isActive)
   const isMacOs =
     snapshot.connection.platform_os === 'macos' ||
@@ -2154,6 +2317,30 @@ function App() {
   function handleToggleSidebar() {
     setAccountMenuOpen(false)
     setWorkspaceStore((current) => setSidebarCollapsed(current, !current.ui.sidebarCollapsed))
+  }
+
+  function handleSidebarResizeStart(event: import('react').PointerEvent<HTMLDivElement>) {
+    if (sidebarCollapsed) {
+      return
+    }
+    event.preventDefault()
+    setActivePanelResize({
+      target: 'sidebar',
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    })
+  }
+
+  function handleInspectorResizeStart(event: import('react').PointerEvent<HTMLDivElement>) {
+    if (inspectorAsOverlay || effectivePanelMode === null) {
+      return
+    }
+    event.preventDefault()
+    setActivePanelResize({
+      target: 'inspector',
+      startX: event.clientX,
+      startWidth: inspectorWidth,
+    })
   }
 
   async function handleHistoryNavigation(direction: -1 | 1) {
@@ -2251,9 +2438,9 @@ function App() {
               : undefined
           }
           changesCount={changesCount}
-          changesDisabled={changesCount === 0}
+          changesDisabled={false}
           changesOpen={effectivePanelMode === 'changes'}
-          codeReady={codeReady}
+          codeReady
           codeOpen={effectivePanelMode === 'code'}
           terminalReady={terminalAvailable}
           terminalOpen={terminalOpen}
@@ -2272,33 +2459,50 @@ function App() {
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="flex min-h-0 flex-1 overflow-hidden">
-          <Sidebar
-            collapsed={sidebarCollapsed}
-            activeUtility={activeCatalogTab ? 'plugins' : null}
-            groups={sidebarGroups}
-            archivedThreads={archivedThreads}
-            accountMenuOpen={accountMenuOpen}
-            accounts={sidebarAccounts}
-            accountLabel={activeSidebarAccount?.label || snapshot.account.identity || 'workspace@agent.app'}
-            planLabel={activeSidebarAccount?.planLabel || humanizePlan(snapshot.account.plan)}
-            onAddProject={() => void handleAddProject()}
-            onNewThread={(rootPath) => void handleNewThread(rootPath)}
-            onSearch={() => openSettingsView('account')}
-            onOpenPlugins={() => openCatalogView('plugins')}
-            onSelectProject={handleProjectSelect}
-            onSelectThread={(threadId) => void handleThreadSelect(threadId)}
-            onArchiveThread={(threadId) => void handleArchiveThread(threadId)}
-            onUnarchiveThread={(threadId) => void handleUnarchiveThread(threadId)}
-            onRenameProject={handleRenameProject}
-            onRemoveProject={handleRemoveProject}
-            onToggleGroup={handleToggleGroup}
-            onToggleAccountMenu={() => setAccountMenuOpen((value) => !value)}
-            onSelectAccount={(accountId) => void handleSelectAccount(accountId)}
-            onAddAccount={handleAddAccount}
-            onOpenSettings={() => openSettingsView('account')}
-            onSignOut={() => void handleLogout()}
-            signOutDisabled={busy || accountSwitchInProgress}
-          />
+            <Sidebar
+              collapsed={sidebarCollapsed}
+              expandedWidth={sidebarWidth}
+              collapsedWidth={SIDEBAR_COLLAPSED_WIDTH}
+              activeUtility={activeCatalogTab ? 'plugins' : null}
+              groups={sidebarGroups}
+              archivedThreads={archivedThreads}
+              accountMenuOpen={accountMenuOpen}
+              accounts={sidebarAccounts}
+              accountLabel={activeSidebarAccount?.label || snapshot.account.identity || 'workspace@agent.app'}
+              planLabel={activeSidebarAccount?.planLabel || humanizePlan(snapshot.account.plan)}
+              onAddProject={() => void handleAddProject()}
+              onNewThread={(rootPath) => void handleNewThread(rootPath)}
+              onSearch={() => openSettingsView('account')}
+              onOpenPlugins={() => openCatalogView('plugins')}
+              onSelectProject={handleProjectSelect}
+              onSelectThread={(threadId) => void handleThreadSelect(threadId)}
+              onArchiveThread={(threadId) => void handleArchiveThread(threadId)}
+              onUnarchiveThread={(threadId) => void handleUnarchiveThread(threadId)}
+              onRenameProject={handleRenameProject}
+              onRemoveProject={handleRemoveProject}
+              onToggleGroup={handleToggleGroup}
+              onToggleAccountMenu={() => setAccountMenuOpen((value) => !value)}
+              onSelectAccount={(accountId) => void handleSelectAccount(accountId)}
+              onAddAccount={handleAddAccount}
+              onOpenSettings={() => openSettingsView('account')}
+              onSignOut={() => void handleLogout()}
+              signOutDisabled={busy || accountSwitchInProgress}
+            />
+            {!sidebarCollapsed ? (
+              <div
+                role="separator"
+                aria-label="Resize sidebar"
+                aria-orientation="vertical"
+                className="relative z-20 w-1.5 shrink-0 cursor-col-resize bg-transparent hover:bg-white/10 active:bg-white/15"
+                style={{
+                  background:
+                    activePanelResize?.target === 'sidebar' ? 'rgba(255,255,255,0.14)' : undefined,
+                }}
+                onPointerDown={handleSidebarResizeStart}
+              >
+                <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/8" />
+              </div>
+            ) : null}
 
           {activeCatalogTab ? (
             <div className="flex min-w-0 flex-1 overflow-hidden">
@@ -2433,10 +2637,27 @@ function App() {
                 />
               </div>
 
+              {!inspectorAsOverlay && effectivePanelMode !== null ? (
+                <div
+                  role="separator"
+                  aria-label="Resize inspector"
+                  aria-orientation="vertical"
+                  className="relative z-20 w-1.5 shrink-0 cursor-col-resize bg-transparent hover:bg-white/10 active:bg-white/15"
+                  style={{
+                    background:
+                      activePanelResize?.target === 'inspector' ? 'rgba(255,255,255,0.14)' : undefined,
+                  }}
+                  onPointerDown={handleInspectorResizeStart}
+                >
+                  <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/8" />
+                </div>
+              ) : null}
+
               <InspectorPanel
                 open={effectivePanelMode !== null}
                 mode={effectivePanelMode ?? 'diagnostics'}
                 overlay={inspectorAsOverlay}
+                width={inspectorWidth}
                 badgeLabel={buildBadgeLabel(
                   effectivePanelMode,
                   changesCount,
@@ -2458,6 +2679,7 @@ function App() {
                 codePath={selectedCodePath}
                 codeBreadcrumbs={codeBreadcrumbs}
                 codeContent={selectedCodeContent}
+                codeChangedLines={codeChangedLines}
                 codeLanguage={languageForPath(selectedCodePath)}
                 approvals={pendingApprovals}
                 warnings={diagnosticsWarnings}
@@ -2485,6 +2707,9 @@ function App() {
                   setPanelMode('changes')
                 }}
                 onOpenFile={() => void handleOpenExternalFile()}
+                onOpenFileWith={(targetId) => void handleOpenFileWithTarget(targetId)}
+                openFileTargets={openWithTargets}
+                openFileTargetsLoading={openWithTargetsLoading}
                 onApprove={(approval, decision) => void handleApproval(approval, decision)}
                 onExportDiagnostics={handleExportDiagnostics}
               />
@@ -3192,6 +3417,44 @@ function cleanPathToken(value: string) {
   return value.trim().replace(/^['"]|['"]$/g, '')
 }
 
+function clampSidebarPanelWidth(width: number) {
+  return Math.min(SIDEBAR_RESIZE_MAX, Math.max(SIDEBAR_RESIZE_MIN, Math.round(width)))
+}
+
+function clampInspectorPanelWidth(width: number) {
+  return Math.min(INSPECTOR_RESIZE_MAX, Math.max(INSPECTOR_RESIZE_MIN, Math.round(width)))
+}
+
+function normalizeWorkspacePathForProject(path: string | null | undefined, projectRoot: string | null | undefined) {
+  const normalizedPath = (path || '').trim().replace(/\\/g, '/')
+  if (!normalizedPath) {
+    return null
+  }
+
+  const normalizedRoot = projectRoot ? normalizeProjectRoot(projectRoot).replace(/\\/g, '/') : ''
+  if (!normalizedRoot) {
+    return normalizedPath
+  }
+
+  if (normalizedPath.startsWith(`${normalizedRoot}/`)) {
+    const relative = normalizedPath.slice(normalizedRoot.length + 1)
+    return relative || null
+  }
+
+  const rootWithoutLeadingSlash = normalizedRoot.replace(/^\/+/, '')
+  if (rootWithoutLeadingSlash) {
+    if (normalizedPath === rootWithoutLeadingSlash) {
+      return null
+    }
+    if (normalizedPath.startsWith(`${rootWithoutLeadingSlash}/`)) {
+      const relative = normalizedPath.slice(rootWithoutLeadingSlash.length + 1)
+      return relative || null
+    }
+  }
+
+  return normalizedPath
+}
+
 function isSearchCommand(value: string) {
   return /^(rg|grep|find|fd)(?:\s|$)/.test(value)
 }
@@ -3318,6 +3581,41 @@ function parseUnifiedDiff(diff?: string | null): ParsedDiffFile[] {
 
   finalizeFile()
   return files
+}
+
+function parseDiffHunkNewStart(header: string) {
+  const match = header.match(/^@@\s*-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s*@@/)
+  if (!match) {
+    return null
+  }
+
+  const start = Number.parseInt(match[1], 10)
+  return Number.isFinite(start) ? start : null
+}
+
+function buildChangedLineSetFromDiff(file: ParsedDiffFile) {
+  const changedLines = new Set<number>()
+
+  for (const hunk of file.hunks) {
+    let nextLine = parseDiffHunkNewStart(hunk.header)
+    if (!nextLine) {
+      continue
+    }
+
+    for (const line of hunk.lines) {
+      if (line.type === 'added') {
+        changedLines.add(nextLine)
+        nextLine += 1
+        continue
+      }
+
+      if (line.type === 'context') {
+        nextLine += 1
+      }
+    }
+  }
+
+  return changedLines
 }
 
 function prepareDiffFiles(files: ParsedDiffFile[]): PreparedDiffFile[] {

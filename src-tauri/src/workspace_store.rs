@@ -4,10 +4,19 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 const WORKSPACE_STORE_FILE: &str = "workspace-store.json";
+const SIDEBAR_WIDTH_MIN: u16 = 248;
+const SIDEBAR_WIDTH_MAX: u16 = 420;
+const SIDEBAR_WIDTH_DEFAULT: u16 = 304;
+const INSPECTOR_WIDTH_MIN: u16 = 340;
+const INSPECTOR_WIDTH_MAX: u16 = 760;
+const INSPECTOR_WIDTH_DEFAULT: u16 = 440;
+const TERMINAL_HEIGHT_MIN: u16 = 160;
+const TERMINAL_HEIGHT_MAX: u16 = 720;
+const TERMINAL_HEIGHT_DEFAULT: u16 = 280;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -42,26 +51,69 @@ pub struct ThreadPreferencePayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceUiStatePayload {
+    #[serde(default)]
     pub sidebar_collapsed: bool,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: u16,
+    #[serde(default = "default_inspector_width")]
+    pub inspector_width: u16,
+    #[serde(default = "default_show_composer_rate_limits")]
     pub show_composer_rate_limits: bool,
+    #[serde(default)]
+    pub terminal_open: bool,
+    #[serde(default = "default_terminal_height")]
+    pub terminal_height: u16,
 }
 
 impl Default for WorkspaceUiStatePayload {
     fn default() -> Self {
         Self {
             sidebar_collapsed: false,
-            show_composer_rate_limits: true,
+            sidebar_width: default_sidebar_width(),
+            inspector_width: default_inspector_width(),
+            show_composer_rate_limits: default_show_composer_rate_limits(),
+            terminal_open: false,
+            terminal_height: default_terminal_height(),
         }
     }
 }
 
+fn default_show_composer_rate_limits() -> bool {
+    true
+}
+
+fn default_sidebar_width() -> u16 {
+    SIDEBAR_WIDTH_DEFAULT
+}
+
+fn default_inspector_width() -> u16 {
+    INSPECTOR_WIDTH_DEFAULT
+}
+
+fn default_terminal_height() -> u16 {
+    TERMINAL_HEIGHT_DEFAULT
+}
+
 impl WorkspaceStorePayload {
     fn normalized(mut self) -> Self {
-        self.projects.retain(|project| !project.root_path.trim().is_empty());
+        self.projects
+            .retain(|project| !project.root_path.trim().is_empty());
         self.thread_preferences.retain(|thread_id, preference| {
             !thread_id.trim().is_empty()
                 && (preference.model.is_some() || preference.reasoning_effort.is_some())
         });
+        self.ui.sidebar_width = self
+            .ui
+            .sidebar_width
+            .clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
+        self.ui.inspector_width = self
+            .ui
+            .inspector_width
+            .clamp(INSPECTOR_WIDTH_MIN, INSPECTOR_WIDTH_MAX);
+        self.ui.terminal_height = self
+            .ui
+            .terminal_height
+            .clamp(TERMINAL_HEIGHT_MIN, TERMINAL_HEIGHT_MAX);
         self
     }
 }
@@ -121,9 +173,8 @@ fn replace_file(source: &Path, destination: &Path) -> Result<()> {
     match fs::rename(source, destination) {
         Ok(()) => Ok(()),
         Err(error) if destination.exists() => {
-            fs::remove_file(destination).with_context(|| {
-                format!("failed to replace existing {}", destination.display())
-            })?;
+            fs::remove_file(destination)
+                .with_context(|| format!("failed to replace existing {}", destination.display()))?;
             fs::rename(source, destination).with_context(|| {
                 format!(
                     "failed to move {} into {} after removing the existing file",
@@ -133,7 +184,11 @@ fn replace_file(source: &Path, destination: &Path) -> Result<()> {
             })
         }
         Err(error) => Err(anyhow!(error)).with_context(|| {
-            format!("failed to move {} into {}", source.display(), destination.display())
+            format!(
+                "failed to move {} into {}",
+                source.display(),
+                destination.display()
+            )
         }),
     }
 }
@@ -141,8 +196,9 @@ fn replace_file(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SavedProjectPayload, ThreadPreferencePayload, WorkspaceStorePayload,
-        WorkspaceUiStatePayload, load_workspace_store, save_workspace_store,
+        load_workspace_store, save_workspace_store, SavedProjectPayload, ThreadPreferencePayload,
+        WorkspaceStorePayload, WorkspaceUiStatePayload, INSPECTOR_WIDTH_MAX, SIDEBAR_WIDTH_MIN,
+        TERMINAL_HEIGHT_MIN,
     };
     use std::collections::BTreeMap;
     use std::fs;
@@ -177,7 +233,11 @@ mod tests {
             )]),
             ui: WorkspaceUiStatePayload {
                 sidebar_collapsed: true,
+                sidebar_width: 320,
+                inspector_width: 520,
                 show_composer_rate_limits: false,
+                terminal_open: true,
+                terminal_height: 360,
             },
         };
 
@@ -186,6 +246,26 @@ mod tests {
 
         assert_eq!(loaded, store);
         cleanup_dir(&base_dir);
+    }
+
+    #[test]
+    fn workspace_store_normalizes_terminal_height_bounds() {
+        let store = WorkspaceStorePayload {
+            ui: WorkspaceUiStatePayload {
+                sidebar_collapsed: false,
+                sidebar_width: 10,
+                inspector_width: 900,
+                show_composer_rate_limits: true,
+                terminal_open: false,
+                terminal_height: 10,
+            },
+            ..WorkspaceStorePayload::default()
+        };
+
+        let normalized = store.normalized();
+        assert_eq!(normalized.ui.terminal_height, TERMINAL_HEIGHT_MIN);
+        assert_eq!(normalized.ui.sidebar_width, SIDEBAR_WIDTH_MIN);
+        assert_eq!(normalized.ui.inspector_width, INSPECTOR_WIDTH_MAX);
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

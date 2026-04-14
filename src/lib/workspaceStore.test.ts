@@ -12,6 +12,10 @@ import {
   renameProject,
   resolvePersistedWorkspaceStore,
   setComposerRateLimitsVisible,
+  setInspectorWidth,
+  setSidebarWidth,
+  setTerminalHeight,
+  setTerminalOpen,
   upsertProject,
   type WorkspaceStore,
 } from './workspaceStore.ts'
@@ -29,7 +33,11 @@ function makeStore(): WorkspaceStore {
     threadPreferences: {},
     ui: {
       sidebarCollapsed: false,
+      sidebarWidth: 304,
+      inspectorWidth: 440,
       showComposerRateLimits: true,
+      terminalOpen: false,
+      terminalHeight: 280,
     },
   }
 }
@@ -72,6 +80,23 @@ test('setComposerRateLimitsVisible updates the persisted ui preference', () => {
   assert.equal(makeStore().ui.showComposerRateLimits, true)
 })
 
+test('setTerminalOpen and setTerminalHeight update the persisted terminal ui preferences', () => {
+  const open = setTerminalOpen(makeStore(), true)
+  const resized = setTerminalHeight(open, 900)
+
+  assert.equal(open.ui.terminalOpen, true)
+  assert.equal(makeStore().ui.terminalOpen, false)
+  assert.equal(resized.ui.terminalHeight, 720)
+})
+
+test('setSidebarWidth and setInspectorWidth clamp panel widths into supported bounds', () => {
+  const resizedSidebar = setSidebarWidth(makeStore(), 1000)
+  const resizedInspector = setInspectorWidth(makeStore(), 200)
+
+  assert.equal(resizedSidebar.ui.sidebarWidth, 420)
+  assert.equal(resizedInspector.ui.inspectorWidth, 340)
+})
+
 test('resolvePersistedWorkspaceStore prefers native data when it exists', () => {
   const nativeStore: WorkspaceStore = {
     projects: [
@@ -85,7 +110,11 @@ test('resolvePersistedWorkspaceStore prefers native data when it exists', () => 
     threadPreferences: {},
     ui: {
       sidebarCollapsed: false,
+      sidebarWidth: 304,
+      inspectorWidth: 440,
       showComposerRateLimits: true,
+      terminalOpen: false,
+      terminalHeight: 280,
     },
   }
   const legacyStore: WorkspaceStore = {
@@ -100,7 +129,11 @@ test('resolvePersistedWorkspaceStore prefers native data when it exists', () => 
     threadPreferences: {},
     ui: {
       sidebarCollapsed: true,
+      sidebarWidth: 320,
+      inspectorWidth: 520,
       showComposerRateLimits: false,
+      terminalOpen: true,
+      terminalHeight: 360,
     },
   }
 
@@ -127,7 +160,11 @@ test('resolvePersistedWorkspaceStore migrates legacy data when native store is e
     },
     ui: {
       sidebarCollapsed: true,
+      sidebarWidth: 320,
+      inspectorWidth: 520,
       showComposerRateLimits: false,
+      terminalOpen: true,
+      terminalHeight: 360,
     },
   }
 
@@ -203,7 +240,11 @@ test('legacy localStorage payload loads into the normalized workspace store shap
       },
       ui: {
         sidebarCollapsed: true,
+        sidebarWidth: 320,
+        inspectorWidth: 520,
         showComposerRateLimits: false,
+        terminalOpen: true,
+        terminalHeight: 360,
       },
     }),
   )
@@ -226,7 +267,11 @@ test('legacy localStorage payload loads into the normalized workspace store shap
       },
       ui: {
         sidebarCollapsed: true,
+        sidebarWidth: 320,
+        inspectorWidth: 520,
         showComposerRateLimits: false,
+        terminalOpen: true,
+        terminalHeight: 360,
       },
     })
 
