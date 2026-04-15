@@ -28,6 +28,7 @@ import {
   setProjectActiveTerminalTab,
   type TerminalTabsState,
 } from './terminalTabs'
+import { IconTooltip } from '../IconTooltip'
 import { CloseIcon, PlusIcon, TerminalIcon } from './icons'
 
 const OUTPUT_BUFFER_LIMIT = 250_000
@@ -42,6 +43,7 @@ type TerminalDrawerProps = {
   height: number
   onHeightChange: (height: number) => void
   onToggleOpen: () => void
+  onOpenLink?: (url: string) => void | Promise<void>
 }
 
 export function TerminalDrawer(props: TerminalDrawerProps) {
@@ -53,6 +55,7 @@ export function TerminalDrawer(props: TerminalDrawerProps) {
   const outputBySessionRef = useRef<Map<string, string>>(new Map())
   const exitBySessionRef = useRef<Map<string, ProjectTerminalExitEvent>>(new Map())
   const activeSessionIdRef = useRef<string | null>(null)
+  const onOpenLinkRef = useRef<TerminalDrawerProps['onOpenLink']>(props.onOpenLink)
   const creatingProjectsRef = useRef<Set<string>>(new Set())
   const initializedProjectsRef = useRef<Set<string>>(new Set())
 
@@ -60,6 +63,10 @@ export function TerminalDrawer(props: TerminalDrawerProps) {
   const [connecting, setConnecting] = useState(false)
   const [tabsState, setTabsState] = useState<TerminalTabsState>(EMPTY_TERMINAL_TABS_STATE)
   const [exitedTabs, setExitedTabs] = useState<Record<string, true>>({})
+
+  useEffect(() => {
+    onOpenLinkRef.current = props.onOpenLink
+  }, [props.onOpenLink])
 
   const currentProjectRoot = props.projectRoot
   const currentTabs = useMemo(
@@ -120,7 +127,10 @@ export function TerminalDrawer(props: TerminalDrawerProps) {
     const fitAddon = new FitAddon()
     const webLinksAddon = new WebLinksAddon((event, uri) => {
       event?.preventDefault()
-      void openExternalUrl(uri).catch((error) => {
+      const openLink = onOpenLinkRef.current
+        ? Promise.resolve(onOpenLinkRef.current(uri))
+        : openExternalUrl(uri)
+      void openLink.catch((error) => {
         setStatus(`Link open failed: ${stringifyError(error)}`)
       })
     })
@@ -519,10 +529,11 @@ export function TerminalDrawer(props: TerminalDrawerProps) {
             <button
               type="button"
               onClick={props.onToggleOpen}
-              className="rounded-[8px] p-1.5 text-neutral-500 transition hover:bg-white/5 hover:text-neutral-200"
+              className="group relative rounded-[8px] p-1.5 text-neutral-500 transition hover:bg-white/5 hover:text-neutral-200"
               title="Close terminal"
             >
               <CloseIcon className="h-3.5 w-3.5" />
+              <IconTooltip label="Close terminal" placement="top" />
             </button>
           </div>
         </header>
@@ -564,9 +575,10 @@ export function TerminalDrawer(props: TerminalDrawerProps) {
                     void handleCloseTab(sessionId)
                   }}
                   title={`Close ${tab.title}`}
-                  className="mr-0.5 flex h-5 w-5 items-center justify-center rounded-[6px] text-neutral-500 transition hover:bg-white/10 hover:text-neutral-200"
+                  className="group relative mr-0.5 flex h-5 w-5 items-center justify-center rounded-[6px] text-neutral-500 transition hover:bg-white/10 hover:text-neutral-200"
                 >
                   <CloseIcon className="h-3 w-3" />
+                  <IconTooltip label={`Close ${tab.title}`} placement="top" />
                 </button>
               </div>
             )
@@ -576,13 +588,16 @@ export function TerminalDrawer(props: TerminalDrawerProps) {
             onClick={() => void handleAddTab()}
             title="New terminal"
             disabled={!currentProjectRoot || connecting}
-            className={`ml-1 inline-flex h-7 w-7 items-center justify-center rounded-[8px] text-neutral-300 transition ${
+            className={`group relative ml-1 inline-flex h-7 w-7 items-center justify-center rounded-[8px] text-neutral-300 transition ${
               !currentProjectRoot || connecting
                 ? 'cursor-not-allowed opacity-50'
                 : 'hover:bg-white/8 hover:text-white'
             }`}
           >
             <PlusIcon className="h-3.5 w-3.5" />
+            {!(!currentProjectRoot || connecting) ? (
+              <IconTooltip label="New terminal" placement="top" />
+            ) : null}
           </button>
         </div>
 

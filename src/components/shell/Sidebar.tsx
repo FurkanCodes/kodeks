@@ -1,5 +1,6 @@
 import { AnimatePresence, LazyMotion, domAnimation, m, useReducedMotion } from 'motion/react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { IconTooltip } from '../IconTooltip'
 import type { SidebarGroup, SidebarThread } from '../../lib/shellState'
 import { LoadingSpinner } from './LoadingSpinner'
 import {
@@ -594,7 +595,7 @@ export function Sidebar(props: SidebarProps) {
                       <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                         <button
                           type="button"
-                          className="rounded-[8px] p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
+                          className="group relative rounded-[8px] p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
                           onClick={(event) => {
                             event.stopPropagation()
                             props.onNewThread(group.rootPath)
@@ -602,10 +603,11 @@ export function Sidebar(props: SidebarProps) {
                           title="New thread"
                         >
                           <PlusIcon className="h-3.25 w-3.25" />
+                          <IconTooltip label="New thread" />
                         </button>
                         <button
                           type="button"
-                          className="rounded-[8px] p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
+                          className="group relative rounded-[8px] p-1 text-[color:var(--color-shell-faint)] transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-text)]"
                           onClick={(event) => {
                             event.stopPropagation()
                             setProjectMenuKey((current) => (current === group.key ? null : group.key))
@@ -614,6 +616,7 @@ export function Sidebar(props: SidebarProps) {
                           title="Project options"
                         >
                           <MoreIcon className="h-3.25 w-3.25" />
+                          <IconTooltip label="Project options" />
                         </button>
                       </div>
                     ) : null}
@@ -699,7 +702,7 @@ export function Sidebar(props: SidebarProps) {
                           <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
                             <button
                               type="button"
-                              className="pointer-events-auto rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
+                              className="group pointer-events-auto relative rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
                               onClick={(event) => {
                                 event.stopPropagation()
                                 setThreadMenuId((current) => (current === thread.id ? null : thread.id))
@@ -708,6 +711,7 @@ export function Sidebar(props: SidebarProps) {
                               title="Thread options"
                             >
                               <MoreIcon className="h-3.25 w-3.25" />
+                              <IconTooltip label="Thread options" />
                             </button>
                           </div>
 
@@ -781,11 +785,12 @@ export function Sidebar(props: SidebarProps) {
                       <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
                         <button
                           type="button"
-                          className="pointer-events-auto rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
+                          className="group pointer-events-auto relative rounded-[8px] p-1 text-[color:var(--color-shell-faint)] opacity-0 transition hover:bg-[color:var(--color-shell-control)] hover:text-[color:var(--color-shell-primary)] group-hover/row:opacity-100"
                           onClick={() => props.onUnarchiveThread(thread.id)}
                           title="Restore thread"
                         >
                           <UndoIcon className="h-3.25 w-3.25" />
+                          <IconTooltip label="Restore thread" />
                         </button>
                       </div>
                     </ThreadRowMotion>

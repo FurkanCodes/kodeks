@@ -323,6 +323,29 @@ export type OpenWithTarget = {
   label: string
 }
 
+export type InAppBrowserClearTarget = 'cache' | 'local_storage' | 'system_storage' | 'cookies'
+
+export type InAppBrowserBounds = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export type InAppBrowserPageEvent = {
+  url: string
+}
+
+export type InAppBrowserInspectEvent = {
+  pageUrl: string
+  selector: string
+  tag: string
+  id?: string | null
+  className?: string | null
+  textSnippet?: string | null
+  timestamp?: number | null
+}
+
 export type GitCommitRequest = {
   subject: string
   body?: string | null
@@ -515,6 +538,40 @@ export async function openExternalUrl(url: string) {
   return invoke<void>('open_external_url', { url })
 }
 
+export async function openInAppBrowser(url: string) {
+  return invoke<void>('open_in_app_browser', { url })
+}
+
+export async function navigateInAppBrowser(url: string) {
+  return invoke<void>('navigate_in_app_browser', { url })
+}
+
+export async function reloadInAppBrowser() {
+  return invoke<void>('reload_in_app_browser')
+}
+
+export async function setInAppBrowserVisible(visible: boolean) {
+  return invoke<void>('set_in_app_browser_visible', { visible })
+}
+
+export async function setInAppBrowserBounds(bounds: InAppBrowserBounds) {
+  return invoke<void>('set_in_app_browser_bounds', { bounds })
+}
+
+export async function toggleInAppBrowserDevtools(forceOpen?: boolean) {
+  return invoke<boolean>('toggle_in_app_browser_devtools', {
+    forceOpen,
+  })
+}
+
+export async function clearInAppBrowserData(target: InAppBrowserClearTarget) {
+  return invoke<void>('clear_in_app_browser_data', { target })
+}
+
+export async function setInAppBrowserInspectMode(enabled: boolean) {
+  return invoke<void>('set_in_app_browser_inspect_mode', { enabled })
+}
+
 export async function savePastedImage(bytes: number[], mimeType?: string | null) {
   return invoke<string>('save_pasted_image', { bytes, mimeType })
 }
@@ -605,6 +662,18 @@ export function onProjectTerminalOutput(callback: (payload: ProjectTerminalOutpu
 
 export function onProjectTerminalExit(callback: (payload: ProjectTerminalExitEvent) => void) {
   return listen<ProjectTerminalExitEvent>('kodeks://terminal-exit', (event) => {
+    callback(event.payload)
+  })
+}
+
+export function onInAppBrowserPage(callback: (payload: InAppBrowserPageEvent) => void) {
+  return listen<InAppBrowserPageEvent>('kodeks://browser-page', (event) => {
+    callback(event.payload)
+  })
+}
+
+export function onInAppBrowserInspect(callback: (payload: InAppBrowserInspectEvent) => void) {
+  return listen<InAppBrowserInspectEvent>('kodeks://browser-inspect', (event) => {
     callback(event.payload)
   })
 }

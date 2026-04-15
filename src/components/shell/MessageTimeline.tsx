@@ -1,5 +1,6 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { LazyMotion, domAnimation, m, useReducedMotion, useSpring, type Variants } from 'motion/react'
+import { IconTooltip } from '../IconTooltip'
 import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -981,11 +982,12 @@ function TraceRow(props: {
       {props.onOpenExternalFile ? (
         <button
           type="button"
-          className="rounded-full p-1 text-neutral-600 opacity-0 transition group-hover:opacity-100 hover:bg-white/[0.05] hover:text-neutral-300"
+          className="group relative rounded-full p-1 text-neutral-600 opacity-0 transition group-hover:opacity-100 hover:bg-white/[0.05] hover:text-neutral-300"
           onClick={() => props.onOpenExternalFile?.(trace.path)}
           title="Open externally"
         >
           <FolderOpenIcon className="h-[11px] w-[11px]" />
+          <IconTooltip label="Open externally" placement="top" />
         </button>
       ) : null}
     </div>
@@ -1038,21 +1040,23 @@ function ChangeReceiptCard(props: {
               {props.onOpenExternalFile ? (
                 <button
                   type="button"
-                  className="rounded-full p-1.25 text-neutral-500 transition hover:bg-white/[0.05] hover:text-neutral-200"
+                  className="group relative rounded-full p-1.25 text-neutral-500 transition hover:bg-white/[0.05] hover:text-neutral-200"
                   onClick={() => props.onOpenExternalFile?.(file.path)}
                   title="Open externally"
                 >
                   <FolderOpenIcon className="h-3 w-3" />
+                  <IconTooltip label="Open externally" placement="top" />
                 </button>
               ) : null}
               {props.onOpenChangeReference ? (
                 <button
                   type="button"
-                  className="rounded-full p-1.25 text-neutral-500 transition hover:bg-white/[0.05] hover:text-neutral-200"
+                  className="group relative rounded-full p-1.25 text-neutral-500 transition hover:bg-white/[0.05] hover:text-neutral-200"
                   onClick={() => props.onOpenChangeReference?.(file.path)}
                   title="Open changes"
                 >
                   <FileCodeIcon className="h-3 w-3" />
+                  <IconTooltip label="Open changes" placement="top" />
                 </button>
               ) : null}
               <div className="rounded-full p-1.25 text-neutral-600">

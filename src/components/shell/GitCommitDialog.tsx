@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { IconTooltip } from '../IconTooltip'
 import {
   ArrowUpIcon,
   BranchIcon,
@@ -101,10 +102,11 @@ export function GitCommitDialog(props: GitCommitDialogProps) {
           <button
             type="button"
             onClick={props.onClose}
-            className="flex size-9 items-center justify-center rounded-[12px] bg-white/[0.03] text-neutral-400 transition hover:bg-white/[0.055] hover:text-white"
+            className="group relative flex size-9 items-center justify-center rounded-[12px] bg-white/[0.03] text-neutral-400 transition hover:bg-white/[0.055] hover:text-white"
             title="Close"
           >
             <CloseIcon className="h-3.5 w-3.5" />
+            <IconTooltip label="Close" />
           </button>
         </div>
 

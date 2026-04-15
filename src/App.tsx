@@ -1,5 +1,5 @@
 import { AnimatePresence, LazyMotion, domAnimation, m, useReducedMotion } from 'motion/react'
-import { startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ComposerDock, type ComposerChoice } from './components/shell/ComposerDock'
 import {
   InspectorPanel,
@@ -15,7 +15,9 @@ import {
 } from './components/shell/MessageTimeline'
 import { GitBranchBlockedDialog } from './components/shell/GitBranchBlockedDialog'
 import { GitCommitDialog } from './components/shell/GitCommitDialog'
+import { BrowserWorkspace } from './components/shell/BrowserWorkspace'
 import { TerminalDrawer } from './components/shell/TerminalDrawer'
+import { SplitViewIcon } from './components/shell/icons'
 import {
   SettingsModal,
   type SettingsRow,
@@ -29,6 +31,7 @@ import { CatalogWorkspace } from './features/catalog/CatalogWorkspace'
 import type { CatalogTab } from './features/catalog/models'
 import {
   archiveThread,
+  clearInAppBrowserData,
   checkoutGitBranch,
   commitGitIndex,
   createGitBranch,
@@ -47,10 +50,17 @@ import {
   loginChatgpt,
   logout,
   listOpenWithTargets,
+  navigateInAppBrowser,
+  onInAppBrowserInspect,
+  onInAppBrowserPage,
   onSnapshot,
+  openInAppBrowser,
   openWorkspaceFileWith,
   openExternalUrl,
   openWorkspaceFile,
+  type InAppBrowserBounds,
+  type InAppBrowserClearTarget,
+  type InAppBrowserInspectEvent,
   type OpenWithTarget,
   pickWorkspaceFolder,
   type RateLimitBucketView,
@@ -61,10 +71,14 @@ import {
   readGitFileDiff,
   pushGitBranch,
   refreshRuntime,
+  reloadInAppBrowser,
   resolveApproval,
   savePastedImage,
   saveWorkspaceStore as saveNativeWorkspaceStore,
   restartRuntime,
+  setInAppBrowserBounds,
+  setInAppBrowserInspectMode,
+  setInAppBrowserVisible,
   type ReasoningEffortOption,
   selectAccount,
   selectThread,
@@ -73,6 +87,7 @@ import {
   type ModelOption,
   startThread,
   steerTurn,
+  toggleInAppBrowserDevtools,
   type ThreadConfigOverride,
   type UserInputItem,
   unarchiveThread,
@@ -104,6 +119,13 @@ import {
   resolveWorkspaceReference,
   type SidebarThread,
 } from './lib/shellState'
+import {
+  buildBrowserInspectClipboardText,
+  buildBrowserInspectChatMessageText,
+  buildBrowserInspectComposerDraft,
+  isLocalDevUrl,
+  normalizeBrowserUrl,
+} from './lib/browserUtils'
 
 const EMPTY_SNAPSHOT: Snapshot = {
   app_name: 'Kodeks',
@@ -226,6 +248,38 @@ type ComposerImageAttachment = {
 }
 
 type PermissionPreset = 'default' | 'full-access'
+
+async function copyTextToClipboard(value: string) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return true
+  }
+
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  textarea.style.pointerEvents = 'none'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
+  } finally {
+    document.body.removeChild(textarea)
+  }
+
+  return copied
+}
 type ComposerRateLimitDisplay = {
   label: string
   value: string
@@ -269,6 +323,8 @@ type PanelResizeState =
       startWidth: number
     }
 
+type BrowserWorkspacePane = 'browser' | 'chat'
+
 const SIDEBAR_COLLAPSED_WIDTH = 72
 const SIDEBAR_RESIZE_MIN = 248
 const SIDEBAR_RESIZE_MAX = 420
@@ -309,6 +365,38 @@ const THREAD_VIEW_REDUCED_VARIANTS = {
     },
   },
 } as const
+
+const BROWSER_VIEWPORT_DEBUG_STORAGE_KEY = 'kodeks:debug:browser-viewport'
+
+function isBrowserViewportDebugEnabled(): boolean {
+  if (!import.meta.env.DEV || typeof window === 'undefined') {
+    return false
+  }
+
+  try {
+    return window.localStorage.getItem(BROWSER_VIEWPORT_DEBUG_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function browserBoundsEqual(
+  left: InAppBrowserBounds | null,
+  right: InAppBrowserBounds | null,
+): boolean {
+  if (left === right) {
+    return true
+  }
+  if (!left || !right) {
+    return false
+  }
+  return (
+    left.x === right.x
+    && left.y === right.y
+    && left.width === right.width
+    && left.height === right.height
+  )
+}
 
 function ThreadViewTransition(props: {
   viewKey: string
@@ -378,6 +466,19 @@ function App() {
   const [settingsSearch, setSettingsSearch] = useState('')
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionKey>('account')
   const [activeCatalogTab, setActiveCatalogTab] = useState<CatalogTab | null>(null)
+  const [browserWorkspaceOpen, setBrowserWorkspaceOpen] = useState(false)
+  const [browserWorkspacePane, setBrowserWorkspacePane] = useState<BrowserWorkspacePane>('browser')
+  const [browserWorkspaceSplit, setBrowserWorkspaceSplit] = useState(false)
+  const [browserCurrentUrl, setBrowserCurrentUrl] = useState('http://localhost:5173')
+  const [browserDevtoolsOpen, setBrowserDevtoolsOpen] = useState(false)
+  const [browserStatus, setBrowserStatus] = useState<string | null>(null)
+  const [browserInspectEnabled, setBrowserInspectEnabled] = useState(false)
+  const [browserInspectResult, setBrowserInspectResult] = useState<InAppBrowserInspectEvent | null>(null)
+  const [browserViewportBounds, setBrowserViewportBounds] = useState<InAppBrowserBounds | null>(null)
+  const [browserInspectChatNotes, setBrowserInspectChatNotes] = useState<ChatMessage[]>([])
+  const [composerPendingInsert, setComposerPendingInsert] = useState<{ id: string; text: string } | null>(
+    null,
+  )
   const [panelMode, setPanelMode] = useState<PanelMode>(null)
   const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null)
   const [selectedCodePath, setSelectedCodePath] = useState<string | null>(null)
@@ -398,6 +499,29 @@ function App() {
   const [activePanelResize, setActivePanelResize] = useState<PanelResizeState | null>(null)
   const [dragSidebarWidth, setDragSidebarWidth] = useState<number | null>(null)
   const [dragInspectorWidth, setDragInspectorWidth] = useState<number | null>(null)
+  const browserDevtoolsOpenRef = useRef(browserDevtoolsOpen)
+  const browserViewportBoundsRef = useRef<InAppBrowserBounds | null>(browserViewportBounds)
+  const browserViewportDebugSeqRef = useRef(0)
+
+  const debugBrowserViewport = useCallback((event: string, payload?: unknown) => {
+    if (!isBrowserViewportDebugEnabled()) {
+      return
+    }
+    browserViewportDebugSeqRef.current += 1
+    if (payload === undefined) {
+      console.debug(`[browser-viewport][app][${browserViewportDebugSeqRef.current}] ${event}`)
+      return
+    }
+    console.debug(`[browser-viewport][app][${browserViewportDebugSeqRef.current}] ${event}`, payload)
+  }, [])
+
+  useEffect(() => {
+    browserDevtoolsOpenRef.current = browserDevtoolsOpen
+  }, [browserDevtoolsOpen])
+
+  useEffect(() => {
+    browserViewportBoundsRef.current = browserViewportBounds
+  }, [browserViewportBounds])
 
   useEffect(() => {
     composerAttachmentsRef.current = composerAttachments
@@ -410,6 +534,107 @@ function App() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    let disposed = false
+    let unlistenPage: undefined | (() => void)
+    let unlistenInspect: undefined | (() => void)
+
+    const subscribe = async () => {
+      const pageUnsubscribe = await onInAppBrowserPage((payload) => {
+        if (disposed) {
+          return
+        }
+        setBrowserCurrentUrl(payload.url)
+        if (browserDevtoolsOpenRef.current) {
+          void toggleInAppBrowserDevtools(true).catch((nextError) => {
+            if (!disposed) {
+              setBrowserStatus(stringifyError(nextError))
+            }
+          })
+        }
+      })
+      if (disposed) {
+        pageUnsubscribe()
+        return
+      }
+      unlistenPage = pageUnsubscribe
+
+      const inspectUnsubscribe = await onInAppBrowserInspect((payload) => {
+        if (disposed) {
+          return
+        }
+        setBrowserInspectResult(payload)
+        setBrowserInspectChatNotes((current) => {
+          const selectedComponent =
+            (payload.selector || '').trim() || (payload.tag || '').trim() || 'selected element'
+          const nextMessage: ChatMessage = {
+            id: `browser-inspect-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            author: 'System',
+            timestamp: formatClockTime(Date.now()),
+            tone: 'system',
+            text: buildBrowserInspectChatMessageText(payload),
+            workLabel: selectedComponent,
+          }
+
+          const next = [...current, nextMessage]
+          return next.length > 24 ? next.slice(next.length - 24) : next
+        })
+        setComposerPendingInsert({
+          id: globalThis.crypto.randomUUID(),
+          text: buildBrowserInspectComposerDraft(payload),
+        })
+        const clipboardText = buildBrowserInspectClipboardText(payload)
+        void copyTextToClipboard(clipboardText)
+          .then((copied) => {
+            if (disposed) {
+              return
+            }
+            if (copied) {
+              setBrowserStatus('This is added to the clipboard.')
+            } else {
+              setBrowserStatus('Selection added to chat.')
+            }
+          })
+          .catch(() => {
+            if (disposed) {
+              return
+            }
+            setBrowserStatus('Selection added to chat.')
+          })
+      })
+      if (disposed) {
+        inspectUnsubscribe()
+        return
+      }
+      unlistenInspect = inspectUnsubscribe
+    }
+
+    void subscribe()
+
+    return () => {
+      disposed = true
+      unlistenPage?.()
+      unlistenInspect?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!browserWorkspaceOpen || (browserWorkspacePane === 'chat' && !browserWorkspaceSplit)) {
+      setBrowserInspectEnabled(false)
+      void setInAppBrowserInspectMode(false).catch(() => {})
+      void setInAppBrowserVisible(false).catch(() => {})
+      return
+    }
+
+    void setInAppBrowserVisible(true).catch((nextError) => {
+      setBrowserStatus(stringifyError(nextError))
+    })
+  }, [browserWorkspaceOpen, browserWorkspacePane, browserWorkspaceSplit, debugBrowserViewport])
+
+  useEffect(() => {
+    setBrowserInspectChatNotes([])
+  }, [activeProjectViewRoot, snapshot.active_thread_id])
   const availableModels = useMemo(
     () => (models.length > 0 ? models : fallbackModels(snapshot)),
     [models, snapshot.session.model],
@@ -547,14 +772,20 @@ function App() {
     }
 
     return `thread:${activeThread?.id || snapshot.active_thread_id || 'empty'}`
-  }, [activeCatalogTab, activeProjectViewRoot, activeThread?.id, currentProjectRoot, snapshot.active_thread_id])
+  }, [
+    activeCatalogTab,
+    activeProjectViewRoot,
+    activeThread?.id,
+    currentProjectRoot,
+    snapshot.active_thread_id,
+  ])
 
   const pendingApprovals = useMemo(
     () =>
-      activeProjectViewRoot || activeCatalogTab
+      activeProjectViewRoot || activeCatalogTab || browserWorkspaceOpen
         ? []
         : snapshot.approvals.filter((approval) => approval.status === 'pending'),
-    [activeCatalogTab, activeProjectViewRoot, snapshot.approvals],
+    [activeCatalogTab, activeProjectViewRoot, browserWorkspaceOpen, snapshot.approvals],
   )
 
   const threadParsedDiffFiles = useMemo(
@@ -689,8 +920,17 @@ function App() {
   )
 
   const shellMessagesValue = useMemo(
-    () => (activeProjectViewRoot ? [] : shellMessages(snapshot, error, activeThread?.updated_at)),
-    [activeProjectViewRoot, activeThread?.updated_at, error, snapshot],
+    () => {
+      if (activeProjectViewRoot) {
+        return []
+      }
+      const baseMessages = shellMessages(snapshot, error, activeThread?.updated_at)
+      if (browserInspectChatNotes.length === 0) {
+        return baseMessages
+      }
+      return [...baseMessages, ...browserInspectChatNotes]
+    },
+    [activeProjectViewRoot, activeThread?.updated_at, browserInspectChatNotes, error, snapshot],
   )
 
   const sidebarAccounts = useMemo<SidebarAccount[]>(
@@ -759,7 +999,9 @@ function App() {
   )
 
   const effectivePanelMode =
-    activeCatalogTab ? null : panelMode ?? (pendingApprovals.length > 0 && !dismissedApprovals ? 'approvals' : null)
+    activeCatalogTab || browserWorkspaceOpen
+      ? null
+      : panelMode ?? (pendingApprovals.length > 0 && !dismissedApprovals ? 'approvals' : null)
   const openWithPath = useMemo(() => {
     const rawPath =
       effectivePanelMode === 'code'
@@ -1484,6 +1726,8 @@ function App() {
     },
   ) {
     const normalizedRootPath = normalizeProjectRoot(rootPath)
+    setBrowserWorkspaceOpen(false)
+    void setInAppBrowserVisible(false).catch(() => {})
     setActiveCatalogTab(null)
     setPanelMode(null)
     setFocusedMessageId(null)
@@ -1538,6 +1782,8 @@ function App() {
     },
   ) {
     setBusy(true)
+    setBrowserWorkspaceOpen(false)
+    void setInAppBrowserVisible(false).catch(() => {})
     setActiveCatalogTab(null)
     setError(null)
     setFocusedMessageId(null)
@@ -1855,6 +2101,8 @@ function App() {
   function openCatalogView(tab: CatalogTab) {
     setAccountMenuOpen(false)
     setSettingsOpen(false)
+    setBrowserWorkspaceOpen(false)
+    void setInAppBrowserVisible(false).catch(() => {})
     setPanelMode(null)
     setActiveCatalogTab(tab)
   }
@@ -2167,6 +2415,10 @@ function App() {
   }
 
   function handleToggleChanges() {
+    if (browserWorkspaceOpen) {
+      setBrowserWorkspaceOpen(false)
+      void setInAppBrowserVisible(false).catch(() => {})
+    }
     if (activeProjectViewRoot && !selectedProjectGitPath) {
       const fallback = projectGit?.files[0]
       if (fallback) {
@@ -2178,6 +2430,10 @@ function App() {
   }
 
   function handleToggleCode() {
+    if (browserWorkspaceOpen) {
+      setBrowserWorkspaceOpen(false)
+      void setInAppBrowserVisible(false).catch(() => {})
+    }
     if (!selectedCodePath && activeProjectViewRoot && selectedProjectGitPath) {
       setSelectedCodePath(selectedProjectGitPath)
     }
@@ -2188,6 +2444,10 @@ function App() {
   }
 
   function handleToggleDiagnostics() {
+    if (browserWorkspaceOpen) {
+      setBrowserWorkspaceOpen(false)
+      void setInAppBrowserVisible(false).catch(() => {})
+    }
     setPanelMode((current) => (current === 'diagnostics' ? null : 'diagnostics'))
   }
 
@@ -2286,6 +2546,186 @@ function App() {
     }
   }
 
+  async function handleOpenBrowserUrl(url: string) {
+    const normalized = normalizeBrowserUrl(url)
+    if (!normalized) {
+      setBrowserStatus('Enter a valid http/https URL.')
+      return
+    }
+
+    setError(null)
+    setBrowserStatus(null)
+    setBrowserWorkspaceOpen(true)
+    setBrowserWorkspacePane('browser')
+    setActiveCatalogTab(null)
+    setPanelMode(null)
+    setBrowserCurrentUrl(normalized)
+
+    try {
+      await openInAppBrowser(normalized)
+      if (browserViewportBounds) {
+        await setInAppBrowserBounds(browserViewportBounds)
+      }
+    } catch (nextError) {
+      setBrowserStatus(stringifyError(nextError))
+    }
+  }
+
+  async function handleNavigateBrowserUrl(url: string) {
+    const normalized = normalizeBrowserUrl(url)
+    if (!normalized) {
+      setBrowserStatus('Enter a valid http/https URL.')
+      return
+    }
+
+    setBrowserStatus(null)
+    setBrowserCurrentUrl(normalized)
+    try {
+      await navigateInAppBrowser(normalized)
+    } catch (nextError) {
+      setBrowserStatus(stringifyError(nextError))
+    }
+  }
+
+  async function handleRefreshBrowser() {
+    setBrowserStatus(null)
+    try {
+      await reloadInAppBrowser()
+    } catch (nextError) {
+      setBrowserStatus(stringifyError(nextError))
+    }
+  }
+
+  async function handleToggleBrowserDevtools() {
+    setBrowserStatus(null)
+    try {
+      const next = await toggleInAppBrowserDevtools()
+      setBrowserDevtoolsOpen(next)
+    } catch (nextError) {
+      setBrowserStatus(stringifyError(nextError))
+    }
+  }
+
+  async function handleClearBrowserData(target: InAppBrowserClearTarget) {
+    setBrowserStatus(null)
+    try {
+      await clearInAppBrowserData(target)
+      setBrowserStatus(`Cleared ${target.replace(/_/g, ' ')}.`)
+    } catch (nextError) {
+      setBrowserStatus(stringifyError(nextError))
+    }
+  }
+
+  async function handleSetBrowserInspect(enabled: boolean) {
+    setBrowserInspectEnabled(enabled)
+    try {
+      await setInAppBrowserInspectMode(enabled)
+      setBrowserStatus(enabled ? 'Pick mode enabled.' : 'Pick mode disabled.')
+    } catch (nextError) {
+      setBrowserStatus(stringifyError(nextError))
+    }
+  }
+
+  const handleBrowserViewportChange = useCallback(async (bounds: InAppBrowserBounds | null) => {
+    debugBrowserViewport('receive', {
+      bounds,
+      pane: browserWorkspacePane,
+      split: browserWorkspaceSplit,
+      workspaceOpen: browserWorkspaceOpen,
+    })
+
+    if (browserBoundsEqual(browserViewportBoundsRef.current, bounds)) {
+      debugBrowserViewport('dedupe-skip', { bounds })
+      return
+    }
+
+    const previous = browserViewportBoundsRef.current
+    browserViewportBoundsRef.current = bounds
+    debugBrowserViewport('state:update', { previous, next: bounds })
+    setBrowserViewportBounds(bounds)
+
+    if (!browserWorkspaceOpen || (!browserWorkspaceSplit && browserWorkspacePane !== 'browser')) {
+      debugBrowserViewport('forward:skip-not-browser-pane')
+      return
+    }
+
+    if (!bounds) {
+      debugBrowserViewport('forward:skip-null-bounds')
+      return
+    }
+
+    try {
+      debugBrowserViewport('forward:invoke-native', { bounds })
+      await setInAppBrowserBounds(bounds)
+      debugBrowserViewport('forward:invoke-native:ok')
+    } catch (nextError) {
+      debugBrowserViewport('forward:invoke-native:error', { message: stringifyError(nextError) })
+      setBrowserStatus(stringifyError(nextError))
+    }
+  }, [browserWorkspaceOpen, browserWorkspacePane, browserWorkspaceSplit, debugBrowserViewport])
+
+  function handleSwitchBrowserWorkspacePane(nextPane: BrowserWorkspacePane) {
+    if (nextPane === browserWorkspacePane) {
+      return
+    }
+
+    setBrowserWorkspacePane(nextPane)
+
+    if (nextPane === 'chat') {
+      setBrowserInspectEnabled(false)
+      void setInAppBrowserInspectMode(false).catch(() => {})
+      void setInAppBrowserVisible(false).catch(() => {})
+      return
+    }
+
+    void setInAppBrowserVisible(true)
+      .then(async () => {
+        if (browserViewportBounds) {
+          await setInAppBrowserBounds(browserViewportBounds)
+        }
+      })
+      .catch((nextError) => {
+        setBrowserStatus(stringifyError(nextError))
+      })
+  }
+
+  function handleToggleBrowserWorkspaceSplit() {
+    const next = !browserWorkspaceSplit
+    setBrowserWorkspaceSplit(next)
+    if (next && browserWorkspacePane === 'chat') {
+      setBrowserWorkspacePane('browser')
+    }
+  }
+
+  function handleToggleBrowser() {
+    if (browserWorkspaceOpen) {
+      setBrowserWorkspaceOpen(false)
+      void setInAppBrowserInspectMode(false).catch(() => {})
+      void setInAppBrowserVisible(false).catch(() => {})
+      return
+    }
+
+    setBrowserWorkspacePane('browser')
+    void handleOpenBrowserUrl(browserCurrentUrl)
+  }
+
+  async function handleTerminalLinkOpen(url: string) {
+    if (isLocalDevUrl(url)) {
+      await handleOpenBrowserUrl(url)
+      return
+    }
+    await openExternalUrl(url)
+  }
+
+  function handleComposerInsertConsumed(id: string) {
+    setComposerPendingInsert((current) => {
+      if (!current || current.id !== id) {
+        return current
+      }
+      return null
+    })
+  }
+
   function findShellHistoryIndex(direction: -1 | 1) {
     let cursor = shellHistory.index + direction
 
@@ -2378,6 +2818,8 @@ function App() {
             changesOpen={false}
             codeReady={false}
             codeOpen={false}
+            browserReady={false}
+            browserOpen={false}
             terminalReady={false}
             terminalOpen={false}
             diagnosticsCount={0}
@@ -2387,6 +2829,7 @@ function App() {
             onGoForward={() => {}}
             onToggleChanges={() => {}}
             onToggleCode={() => {}}
+            onToggleBrowser={() => {}}
             onToggleTerminal={() => {}}
             onToggleDiagnostics={() => {}}
           />
@@ -2417,9 +2860,112 @@ function App() {
   }
 
   const title =
-    activeCatalogTab || activeProjectViewRoot
+    browserWorkspaceOpen
+      ? `Browser · ${activeProjectLabel}`
+      : activeCatalogTab || activeProjectViewRoot
       ? activeProjectLabel
       : activeThread?.name || activeThread?.preview || activeProjectLabel || 'Untitled thread'
+  const agenticViewActive = browserWorkspaceOpen && browserWorkspaceSplit
+
+  const chatWorkspaceBody = (
+    <ThreadViewTransition viewKey={threadViewKey}>
+      <>
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto shell-scroll-none">
+          <div className="mx-auto flex min-h-full w-full max-w-[74rem] flex-col px-4">
+            <div className="shrink-0">
+              {pendingApprovals.length > 0 && effectivePanelMode !== 'approvals' ? (
+                <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-amber-400/10 bg-amber-500/5 px-4 py-3.5">
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-200/70">
+                      Approvals
+                    </div>
+                    <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">
+                      {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'approval' : 'approvals'} need review.
+                    </div>
+                  </div>
+                  <NoticeButton
+                    onClick={() => {
+                      setDismissedApprovals(false)
+                      setPanelMode('approvals')
+                    }}
+                  >
+                    Review approvals
+                  </NoticeButton>
+                </section>
+              ) : null}
+
+              {undoArchive ? (
+                <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-white/5 bg-white/[0.03] px-4 py-3.5">
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">Archived</div>
+                    <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">{undoArchive.label} moved out of the main sidebar.</div>
+                  </div>
+                  <NoticeButton onClick={() => void handleUnarchiveThread(undoArchive.id)}>Undo archive</NoticeButton>
+                </section>
+              ) : null}
+
+              {noticeContent}
+            </div>
+
+            <MessageTimeline
+              messages={shellMessagesValue}
+              suggestions={PROMPT_SUGGESTIONS}
+              emptyState={activeProjectEmptyState}
+              composerEngaged={composerEngaged}
+              fillAvailableHeight
+              liveStatus={liveStatus}
+              focusedMessageId={focusedMessageId}
+              scrollContainerRef={scrollContainerRef}
+              onSuggestionSelect={(value) => void handleSend(value)}
+              onOpenFileReference={handleOpenCodePath}
+              onOpenChangeReference={handleOpenDiffPath}
+              onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
+              resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
+            />
+          </div>
+        </div>
+
+        <ComposerDock
+          attachments={composerAttachments}
+          clearToken={composerResetToken}
+          projectLabel={activeProjectLabel}
+          projectPath={currentProjectRoot}
+          models={availableModels}
+          selectedModel={composerModel}
+          selectedReasoning={composerReasoning}
+          reasoningOptions={reasoningOptions}
+          selectedPermissionPreset={selectedPermissionPreset}
+          permissionOptions={permissionOptions}
+          workspaceFiles={workspaceFiles}
+          liveTurn={Boolean(activeTurnId)}
+          authenticated={hasUsableAccounts}
+          rateLimitDisplays={composerRateLimitDisplays}
+          showRateLimitsInline={workspaceStore.ui.showComposerRateLimits}
+          busy={busy}
+          gitBranchLabel={projectGit ? activeBranchLabel : null}
+          gitBranches={projectGit?.branches ?? null}
+          gitSummary={composerGitSummary}
+          gitBusy={projectGitLoading || projectGitActionBusy}
+          compactModelMenu={compactModelMenu}
+          touchModelPreview={touchModelPreview}
+          pendingInsert={composerPendingInsert}
+          onOpenProjectPicker={() => void handleAddProject()}
+          onPasteImages={(files) => void handlePasteComposerImages(files)}
+          onRemoveAttachment={handleRemoveComposerAttachment}
+          onInsertConsumed={handleComposerInsertConsumed}
+          onComposingChange={setComposerEngaged}
+          onSubmit={(content) => void handleSend(content)}
+          onInterrupt={() => void handleInterruptTurn()}
+          onSelectModel={handleModelChange}
+          onSelectReasoning={handleReasoningChange}
+          onSelectPermissionPreset={(value) => void handlePermissionPresetChange(value)}
+          onOpenRateLimits={handleOpenRateLimits}
+          onCheckoutGitBranch={(branchName) => void handleCheckoutProjectGitBranch(branchName)}
+          onCreateGitBranch={(branchName) => void handleCreateProjectGitBranch(branchName)}
+        />
+      </>
+    </ThreadViewTransition>
+  )
 
   return (
     <>
@@ -2433,7 +2979,7 @@ function App() {
           runState={runState}
           titlePinned={Boolean(activeCatalogTab) || !activeProjectViewRoot}
           onTitleAccessoryClick={
-            !activeCatalogTab && !activeProjectViewRoot && activeThread
+            !browserWorkspaceOpen && !activeCatalogTab && !activeProjectViewRoot && activeThread
               ? () => void handleArchiveThread(activeThread.id)
               : undefined
           }
@@ -2442,8 +2988,10 @@ function App() {
           changesOpen={effectivePanelMode === 'changes'}
           codeReady
           codeOpen={effectivePanelMode === 'code'}
+          browserReady
+          browserOpen={browserWorkspaceOpen}
           terminalReady={terminalAvailable}
-          terminalOpen={terminalOpen}
+          terminalOpen={!agenticViewActive && terminalOpen}
           diagnosticsCount={diagnosticsCount}
           diagnosticsOpen={effectivePanelMode === 'diagnostics'}
           commitReady={Boolean(projectGit && (composerGitSummary.fileCount > 0 || gitCanPush))}
@@ -2453,42 +3001,45 @@ function App() {
           onGoForward={() => void handleHistoryNavigation(1)}
           onToggleChanges={handleToggleChanges}
           onToggleCode={handleToggleCode}
+          onToggleBrowser={handleToggleBrowser}
           onToggleTerminal={handleToggleTerminal}
           onToggleDiagnostics={handleToggleDiagnostics}
         />
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="flex min-h-0 flex-1 overflow-hidden">
-            <Sidebar
-              collapsed={sidebarCollapsed}
-              expandedWidth={sidebarWidth}
-              collapsedWidth={SIDEBAR_COLLAPSED_WIDTH}
-              activeUtility={activeCatalogTab ? 'plugins' : null}
-              groups={sidebarGroups}
-              archivedThreads={archivedThreads}
-              accountMenuOpen={accountMenuOpen}
-              accounts={sidebarAccounts}
-              accountLabel={activeSidebarAccount?.label || snapshot.account.identity || 'workspace@agent.app'}
-              planLabel={activeSidebarAccount?.planLabel || humanizePlan(snapshot.account.plan)}
-              onAddProject={() => void handleAddProject()}
-              onNewThread={(rootPath) => void handleNewThread(rootPath)}
-              onSearch={() => openSettingsView('account')}
-              onOpenPlugins={() => openCatalogView('plugins')}
-              onSelectProject={handleProjectSelect}
-              onSelectThread={(threadId) => void handleThreadSelect(threadId)}
-              onArchiveThread={(threadId) => void handleArchiveThread(threadId)}
-              onUnarchiveThread={(threadId) => void handleUnarchiveThread(threadId)}
-              onRenameProject={handleRenameProject}
-              onRemoveProject={handleRemoveProject}
-              onToggleGroup={handleToggleGroup}
-              onToggleAccountMenu={() => setAccountMenuOpen((value) => !value)}
-              onSelectAccount={(accountId) => void handleSelectAccount(accountId)}
-              onAddAccount={handleAddAccount}
-              onOpenSettings={() => openSettingsView('account')}
-              onSignOut={() => void handleLogout()}
-              signOutDisabled={busy || accountSwitchInProgress}
-            />
-            {!sidebarCollapsed ? (
+            {!agenticViewActive ? (
+              <Sidebar
+                collapsed={sidebarCollapsed}
+                expandedWidth={sidebarWidth}
+                collapsedWidth={SIDEBAR_COLLAPSED_WIDTH}
+                activeUtility={activeCatalogTab ? 'plugins' : null}
+                groups={sidebarGroups}
+                archivedThreads={archivedThreads}
+                accountMenuOpen={accountMenuOpen}
+                accounts={sidebarAccounts}
+                accountLabel={activeSidebarAccount?.label || snapshot.account.identity || 'workspace@agent.app'}
+                planLabel={activeSidebarAccount?.planLabel || humanizePlan(snapshot.account.plan)}
+                onAddProject={() => void handleAddProject()}
+                onNewThread={(rootPath) => void handleNewThread(rootPath)}
+                onSearch={() => openSettingsView('account')}
+                onOpenPlugins={() => openCatalogView('plugins')}
+                onSelectProject={handleProjectSelect}
+                onSelectThread={(threadId) => void handleThreadSelect(threadId)}
+                onArchiveThread={(threadId) => void handleArchiveThread(threadId)}
+                onUnarchiveThread={(threadId) => void handleUnarchiveThread(threadId)}
+                onRenameProject={handleRenameProject}
+                onRemoveProject={handleRemoveProject}
+                onToggleGroup={handleToggleGroup}
+                onToggleAccountMenu={() => setAccountMenuOpen((value) => !value)}
+                onSelectAccount={(accountId) => void handleSelectAccount(accountId)}
+                onAddAccount={handleAddAccount}
+                onOpenSettings={() => openSettingsView('account')}
+                onSignOut={() => void handleLogout()}
+                signOutDisabled={busy || accountSwitchInProgress}
+              />
+            ) : null}
+            {!agenticViewActive && !sidebarCollapsed ? (
               <div
                 role="separator"
                 aria-label="Resize sidebar"
@@ -2531,113 +3082,111 @@ function App() {
           ) : (
             <div className="relative flex min-w-0 flex-1 overflow-hidden">
               <div className="flex min-w-0 flex-1 flex-col bg-[#09090b]">
-                <ThreadViewTransition viewKey={threadViewKey}>
+                {browserWorkspaceOpen ? (
                   <>
-                    <div ref={scrollContainerRef} className="flex-1 overflow-y-auto shell-scroll-none">
-                      <div className="mx-auto flex min-h-full w-full max-w-[74rem] flex-col px-4">
-                        <div className="shrink-0">
-                          {pendingApprovals.length > 0 && effectivePanelMode !== 'approvals' ? (
-                            <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-amber-400/10 bg-amber-500/5 px-4 py-3.5">
-                              <div>
-                                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-200/70">
-                                  Approvals
-                                </div>
-                                <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">
-                                  {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'approval' : 'approvals'} need review.
-                                </div>
-                              </div>
-                              <NoticeButton
-                                onClick={() => {
-                                  setDismissedApprovals(false)
-                                  setPanelMode('approvals')
-                                }}
-                              >
-                                Review approvals
-                              </NoticeButton>
-                            </section>
-                          ) : null}
-
-                          {undoArchive ? (
-                            <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-white/5 bg-white/[0.03] px-4 py-3.5">
-                              <div>
-                                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">Archived</div>
-                                <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">{undoArchive.label} moved out of the main sidebar.</div>
-                              </div>
-                              <NoticeButton onClick={() => void handleUnarchiveThread(undoArchive.id)}>Undo archive</NoticeButton>
-                            </section>
-                          ) : null}
-
-                          {noticeContent}
-                        </div>
-
-                        <MessageTimeline
-                          messages={shellMessagesValue}
-                          suggestions={PROMPT_SUGGESTIONS}
-                          emptyState={activeProjectEmptyState}
-                          composerEngaged={composerEngaged}
-                          fillAvailableHeight
-                          liveStatus={liveStatus}
-                          focusedMessageId={focusedMessageId}
-                          scrollContainerRef={scrollContainerRef}
-                          onSuggestionSelect={(value) => void handleSend(value)}
-                          onOpenFileReference={handleOpenCodePath}
-                          onOpenChangeReference={handleOpenDiffPath}
-                          onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
-                          resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
-                        />
+                    <div className="flex h-10 items-center justify-between gap-2 border-b border-white/8 px-3">
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleSwitchBrowserWorkspacePane('browser')}
+                          className={`inline-flex h-7 items-center rounded-[8px] px-2.5 text-[12px] font-medium transition ${
+                            browserWorkspacePane === 'browser' && !browserWorkspaceSplit
+                              ? 'bg-white/12 text-white'
+                              : 'text-neutral-400 hover:bg-white/8 hover:text-neutral-200'
+                          }`}
+                        >
+                          Browser
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSwitchBrowserWorkspacePane('chat')}
+                          className={`inline-flex h-7 items-center rounded-[8px] px-2.5 text-[12px] font-medium transition ${
+                            browserWorkspacePane === 'chat' && !browserWorkspaceSplit
+                              ? 'bg-white/12 text-white'
+                              : 'text-neutral-400 hover:bg-white/8 hover:text-neutral-200'
+                          }`}
+                        >
+                          Chat
+                        </button>
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={handleToggleBrowserWorkspaceSplit}
+                        className={`inline-flex h-7 items-center gap-1.5 rounded-[8px] px-2.5 text-[11px] font-medium uppercase tracking-[0.06em] transition ${
+                          browserWorkspaceSplit
+                            ? 'bg-sky-300/20 text-sky-100'
+                            : 'text-neutral-400 hover:bg-white/8 hover:text-neutral-200'
+                        }`}
+                        title="Toggle agentic split view"
+                        aria-label="Toggle agentic split view"
+                      >
+                        <SplitViewIcon className="h-3.5 w-3.5" />
+                        Agentic
+                      </button>
                     </div>
 
-                    <ComposerDock
-                      attachments={composerAttachments}
-                      clearToken={composerResetToken}
-                      projectLabel={activeProjectLabel}
-                      projectPath={currentProjectRoot}
-                      models={availableModels}
-                      selectedModel={composerModel}
-                      selectedReasoning={composerReasoning}
-                      reasoningOptions={reasoningOptions}
-                      selectedPermissionPreset={selectedPermissionPreset}
-                      permissionOptions={permissionOptions}
-                      workspaceFiles={workspaceFiles}
-                      liveTurn={Boolean(activeTurnId)}
-                      authenticated={hasUsableAccounts}
-                      rateLimitDisplays={composerRateLimitDisplays}
-                      showRateLimitsInline={workspaceStore.ui.showComposerRateLimits}
-                      busy={busy}
-                      gitBranchLabel={projectGit ? activeBranchLabel : null}
-                      gitBranches={projectGit?.branches ?? null}
-                      gitSummary={composerGitSummary}
-                      gitBusy={projectGitLoading || projectGitActionBusy}
-                      compactModelMenu={compactModelMenu}
-                      touchModelPreview={touchModelPreview}
-                      onOpenProjectPicker={() => void handleAddProject()}
-                      onPasteImages={(files) => void handlePasteComposerImages(files)}
-                      onRemoveAttachment={handleRemoveComposerAttachment}
-                      onComposingChange={setComposerEngaged}
-                      onSubmit={(content) => void handleSend(content)}
-                      onInterrupt={() => void handleInterruptTurn()}
-                      onSelectModel={handleModelChange}
-                      onSelectReasoning={handleReasoningChange}
-                      onSelectPermissionPreset={(value) => void handlePermissionPresetChange(value)}
-                      onOpenRateLimits={handleOpenRateLimits}
-                      onCheckoutGitBranch={(branchName) => void handleCheckoutProjectGitBranch(branchName)}
-                      onCreateGitBranch={(branchName) => void handleCreateProjectGitBranch(branchName)}
-                    />
+                    {browserWorkspaceSplit ? (
+                      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+                        <div className="flex min-h-0 flex-1 border-b border-white/8 lg:border-b-0 lg:border-r">
+                          <BrowserWorkspace
+                            currentUrl={browserCurrentUrl}
+                            devtoolsOpen={browserDevtoolsOpen}
+                            inspectEnabled={browserInspectEnabled}
+                            inspectResult={browserInspectResult}
+                            status={browserStatus}
+                            onNavigate={(url) => void handleNavigateBrowserUrl(url)}
+                            onRefresh={() => void handleRefreshBrowser()}
+                            onToggleDevtools={() => void handleToggleBrowserDevtools()}
+                            onClearData={(target) => void handleClearBrowserData(target)}
+                            onSetInspectEnabled={(enabled) => void handleSetBrowserInspect(enabled)}
+                            onViewportChange={handleBrowserViewportChange}
+                          />
+                        </div>
+                        <div className="flex min-h-0 flex-1">{chatWorkspaceBody}</div>
+                      </div>
+                    ) : null}
+
+                    {!browserWorkspaceSplit && browserWorkspacePane === 'browser' ? (
+                      <div className="flex min-h-0 flex-1">
+                        <BrowserWorkspace
+                          currentUrl={browserCurrentUrl}
+                          devtoolsOpen={browserDevtoolsOpen}
+                          inspectEnabled={browserInspectEnabled}
+                          inspectResult={browserInspectResult}
+                          status={browserStatus}
+                          onNavigate={(url) => void handleNavigateBrowserUrl(url)}
+                          onRefresh={() => void handleRefreshBrowser()}
+                          onToggleDevtools={() => void handleToggleBrowserDevtools()}
+                          onClearData={(target) => void handleClearBrowserData(target)}
+                          onSetInspectEnabled={(enabled) => void handleSetBrowserInspect(enabled)}
+                          onViewportChange={handleBrowserViewportChange}
+                        />
+                      </div>
+                    ) : null}
+
+                    {!browserWorkspaceSplit ? (
+                      <div className={browserWorkspacePane === 'chat' ? 'flex min-h-0 flex-1' : 'hidden'}>
+                        {chatWorkspaceBody}
+                      </div>
+                    ) : null}
                   </>
-                </ThreadViewTransition>
+                ) : (
+                  chatWorkspaceBody
+                )}
 
                 <TerminalDrawer
-                  open={terminalOpen}
+                  open={!agenticViewActive && terminalOpen}
                   projectRoot={terminalProjectRoot}
                   projectLabel={activeProjectLabel}
                   height={terminalHeight}
                   onHeightChange={handleTerminalHeightChange}
                   onToggleOpen={handleToggleTerminal}
+                  onOpenLink={(url) => void handleTerminalLinkOpen(url)}
                 />
               </div>
 
-              {!inspectorAsOverlay && effectivePanelMode !== null ? (
+              {!browserWorkspaceOpen && !inspectorAsOverlay && effectivePanelMode !== null ? (
                 <div
                   role="separator"
                   aria-label="Resize inspector"
@@ -2654,7 +3203,7 @@ function App() {
               ) : null}
 
               <InspectorPanel
-                open={effectivePanelMode !== null}
+                open={!browserWorkspaceOpen && effectivePanelMode !== null}
                 mode={effectivePanelMode ?? 'diagnostics'}
                 overlay={inspectorAsOverlay}
                 width={inspectorWidth}

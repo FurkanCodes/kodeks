@@ -1,4 +1,5 @@
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { IconTooltip } from '../IconTooltip'
 import type { ModelOption } from '../../lib/kodeks'
 import { extractReferenceQuery, resolveWorkspaceReference } from '../../lib/shellState'
 import {
@@ -72,6 +73,11 @@ type ComposerDockProps = {
   gitBusy?: boolean
   compactModelMenu?: boolean
   touchModelPreview?: boolean
+  pendingInsert?: {
+    id: string
+    text: string
+  } | null
+  onInsertConsumed?: (id: string) => void
   onOpenProjectPicker: () => void
   onPasteImages: (files: File[]) => void
   onRemoveAttachment: (id: string) => void
@@ -105,6 +111,7 @@ export function ComposerDock(props: ComposerDockProps) {
   const reasoningRef = useRef<HTMLDivElement | null>(null)
   const gitBranchRef = useRef<HTMLDivElement | null>(null)
   const modelButtonRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const lastHandledInsertIdRef = useRef<string | null>(null)
 
   const selectedModelOption = useMemo(
     () => props.models.find((item) => item.model === props.selectedModel) ?? null,
@@ -172,6 +179,25 @@ export function ComposerDock(props: ComposerDockProps) {
   useEffect(() => {
     setDraftPrompt('')
   }, [props.clearToken])
+
+  useEffect(() => {
+    if (!props.pendingInsert) {
+      return
+    }
+    if (lastHandledInsertIdRef.current === props.pendingInsert.id) {
+      return
+    }
+
+    lastHandledInsertIdRef.current = props.pendingInsert.id
+    const inserted = props.pendingInsert.text.trim()
+    if (!inserted) {
+      props.onInsertConsumed?.(props.pendingInsert.id)
+      return
+    }
+
+    setDraftPrompt((current) => (current.trim().length > 0 ? `${current.trimEnd()}\n\n${inserted}` : inserted))
+    props.onInsertConsumed?.(props.pendingInsert.id)
+  }, [props.onInsertConsumed, props.pendingInsert])
 
   useLayoutEffect(() => {
     props.onComposingChange(isComposing)
@@ -422,11 +448,12 @@ export function ComposerDock(props: ComposerDockProps) {
                       <span className="truncate text-[11px] text-neutral-200">{attachment.name}</span>
                       <button
                         type="button"
-                        className="ml-auto rounded-full bg-black/45 p-1 text-neutral-300 transition hover:bg-black/70 hover:text-white"
+                        className="group relative ml-auto rounded-full bg-black/45 p-1 text-neutral-300 transition hover:bg-black/70 hover:text-white"
                         onClick={() => props.onRemoveAttachment(attachment.id)}
                         title="Remove screenshot"
                       >
                         <CloseIcon className="h-3 w-3" />
+                        <IconTooltip label="Remove screenshot" placement="top" />
                       </button>
                     </div>
                   </div>
@@ -474,11 +501,12 @@ export function ComposerDock(props: ComposerDockProps) {
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
               <button
                 type="button"
-                className="flex size-8 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-white/[0.05] hover:text-neutral-200"
+                className="group relative flex size-8 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-white/[0.05] hover:text-neutral-200"
                 title="Choose workspace"
                 onClick={props.onOpenProjectPicker}
               >
                 <PlusIcon className="h-4 w-4" />
+                <IconTooltip label="Choose workspace" placement="top" />
               </button>
 
               <div className="relative" ref={modelRef}>

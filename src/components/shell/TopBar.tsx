@@ -1,5 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { type MouseEvent, type ReactNode } from 'react'
+import { IconTooltip } from '../IconTooltip'
 import {
   ArchiveIcon,
   ArrowLeftIcon,
@@ -10,6 +11,7 @@ import {
   SidebarCollapseIcon,
   SidebarExpandIcon,
   SquarePenIcon,
+  MonitorIcon,
   TerminalIcon,
 } from './icons'
 
@@ -30,6 +32,8 @@ type TopBarProps = {
   changesOpen: boolean
   codeReady: boolean
   codeOpen: boolean
+  browserReady: boolean
+  browserOpen: boolean
   terminalReady: boolean
   terminalOpen: boolean
   diagnosticsCount: number
@@ -41,6 +45,7 @@ type TopBarProps = {
   onGoForward: () => void
   onToggleChanges: () => void
   onToggleCode: () => void
+  onToggleBrowser: () => void
   onToggleTerminal: () => void
   onToggleDiagnostics: () => void
 }
@@ -67,16 +72,8 @@ function WindowIconButton(props: {
       }`}
     >
       <Icon className="h-3.25 w-3.25" />
-      <TooltipLabel label={props.label} />
+      <IconTooltip label={props.label} />
     </button>
-  )
-}
-
-function TooltipLabel(props: { label: string }) {
-  return (
-    <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 -translate-x-1/2 whitespace-nowrap rounded-[8px] border border-white/12 bg-[#0b0d11] px-2 py-1 text-[11px] font-medium tracking-[-0.01em] text-neutral-200 opacity-0 shadow-[0_8px_26px_rgba(0,0,0,0.35)] transition group-hover:opacity-100 group-focus-visible:opacity-100">
-      {props.label}
-    </span>
   )
 }
 
@@ -109,7 +106,7 @@ function HeaderToggle(props: {
           {props.count}
         </span>
       ) : null}
-      <TooltipLabel label={props.count > 0 ? `${props.label} (${props.count})` : props.label} />
+      <IconTooltip label={props.count > 0 ? `${props.label} (${props.count})` : props.label} />
     </button>
   )
 }
@@ -136,7 +133,7 @@ function HeaderAction(props: {
       }`}
     >
       <Icon className="h-3.25 w-3.25" />
-      <TooltipLabel label={props.label} />
+      <IconTooltip label={props.label} />
     </button>
   )
 }
@@ -173,7 +170,7 @@ function RunStatePill(props: { state: TopBarRunState }) {
       >
         <span className={`size-1.5 rounded-full ${status.dotClass}`} />
       </div>
-      <TooltipLabel label={status.label} />
+      <IconTooltip label={status.label} />
     </div>
   )
 }
@@ -227,9 +224,10 @@ function TitlePill(props: {
           type="button"
           title="Archive thread"
           onClick={props.onAccessoryClick}
-          className="flex size-6 shrink-0 items-center justify-center rounded-[8px] text-[color:var(--color-shell-faint)] transition hover:bg-white/[0.06] hover:text-[color:var(--color-shell-primary)]"
+          className="group relative flex size-6 shrink-0 items-center justify-center rounded-[8px] text-[color:var(--color-shell-faint)] transition hover:bg-white/[0.06] hover:text-[color:var(--color-shell-primary)]"
         >
           <ArchiveIcon className="h-3.25 w-3.25" />
+          <IconTooltip label="Archive thread" />
         </button>
       ) : null}
     </div>
@@ -318,6 +316,14 @@ export function TopBar(props: TopBarProps) {
           active={props.codeOpen}
           disabled={!props.codeReady}
           onClick={props.onToggleCode}
+        />
+        <HeaderToggle
+          icon={MonitorIcon}
+          label="Browser"
+          count={0}
+          active={props.browserOpen}
+          disabled={!props.browserReady}
+          onClick={props.onToggleBrowser}
         />
         <HeaderToggle
           icon={TerminalIcon}

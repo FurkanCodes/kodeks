@@ -10,6 +10,7 @@ import {
   Clock3,
   CircleGauge,
   CloudOff,
+  Columns2,
   Copy,
   CreditCard,
   FolderOpen,
@@ -20,6 +21,9 @@ import {
   FileText,
   FolderGit2,
   FolderPlus,
+  Globe,
+  Crosshair,
+  Eraser,
   GitBranch,
   GitPullRequest,
   Keyboard,
@@ -38,6 +42,8 @@ import {
   Shield,
   ShieldAlert,
   SquarePen,
+  RefreshCw,
+  Wrench,
   PanelLeftClose,
   PanelLeftOpen,
   Sparkles,
@@ -197,6 +203,10 @@ export function MonitorIcon(props: IconProps) {
   return renderIcon(Monitor, props, 1.25)
 }
 
+export function GlobeIcon(props: IconProps) {
+  return renderIcon(Globe, props, 1.25)
+}
+
 export function FolderSearchIcon(props: IconProps) {
   return renderIcon(FolderSearch2, props, 1.25)
 }
@@ -253,6 +263,22 @@ export function ShieldAlertIcon(props: IconProps) {
   return renderIcon(ShieldAlert, props, 1.25)
 }
 
+export function RefreshIcon(props: IconProps) {
+  return renderIcon(RefreshCw, props, 1.25)
+}
+
+export function WrenchIcon(props: IconProps) {
+  return renderIcon(Wrench, props, 1.25)
+}
+
+export function CrosshairIcon(props: IconProps) {
+  return renderIcon(Crosshair, props, 1.25)
+}
+
+export function EraserIcon(props: IconProps) {
+  return renderIcon(Eraser, props, 1.25)
+}
+
 export function SidebarCollapseIcon(props: IconProps) {
   return renderIcon(PanelLeftClose, props, 1.35)
 }
@@ -267,4 +293,8 @@ export function PinIcon(props: IconProps) {
 
 export function SquarePenIcon(props: IconProps) {
   return renderIcon(SquarePen, props, 1.25)
+}
+
+export function SplitViewIcon(props: IconProps) {
+  return renderIcon(Columns2, props, 1.25)
 }

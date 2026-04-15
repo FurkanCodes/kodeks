@@ -16,12 +16,14 @@ use tauri::{Emitter, Manager, State};
 use workspace_store::WorkspaceStorePayload;
 
 mod catalog;
+mod browser;
 mod git;
 mod terminal;
 mod workspace_store;
 
 struct DesktopState {
     catalog: Mutex<catalog::CatalogRepository>,
+    browser: Mutex<browser::BrowserManager>,
     terminal: Mutex<terminal::TerminalManager>,
     runtime: RuntimeHandle,
     _single_instance: Option<SingleInstanceGuard>,
@@ -128,6 +130,15 @@ fn terminal_state<'a>(
         .terminal
         .lock()
         .map_err(|_| "terminal state is unavailable".to_string())
+}
+
+fn browser_state<'a>(
+    state: &'a State<'_, DesktopState>,
+) -> Result<MutexGuard<'a, browser::BrowserManager>, String> {
+    state
+        .browser
+        .lock()
+        .map_err(|_| "browser state is unavailable".to_string())
 }
 
 async fn fetch_app_server_plugins(
@@ -735,6 +746,93 @@ async fn open_external_url(url: String) -> Result<(), String> {
     open_external_target(trimmed).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn open_in_app_browser(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    url: String,
+) -> Result<(), String> {
+    browser_state(&state)?
+        .open(&app, &url)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn navigate_in_app_browser(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    url: String,
+) -> Result<(), String> {
+    browser_state(&state)?
+        .navigate(&app, &url)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn reload_in_app_browser(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    browser_state(&state)?
+        .reload(&app)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_in_app_browser_visible(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    visible: bool,
+) -> Result<(), String> {
+    browser_state(&state)?
+        .set_visible(&app, visible)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_in_app_browser_bounds(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    bounds: browser::BrowserViewport,
+) -> Result<(), String> {
+    browser_state(&state)?
+        .set_bounds(&app, bounds)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn toggle_in_app_browser_devtools(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    force_open: Option<bool>,
+) -> Result<bool, String> {
+    browser_state(&state)?
+        .toggle_devtools(&app, force_open)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn clear_in_app_browser_data(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    target: browser::BrowserClearTarget,
+) -> Result<(), String> {
+    browser_state(&state)?
+        .clear_data(&app, target)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_in_app_browser_inspect_mode(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    browser_state(&state)?
+        .set_inspect_mode(&app, enabled)
+        .map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Deserialize)]
 struct WorkspaceFileSearchOptions {
     limit: Option<usize>,
@@ -977,6 +1075,7 @@ pub fn run() {
 
             app.manage(DesktopState {
                 catalog: Mutex::new(catalog::CatalogRepository::new_mock()),
+                browser: Mutex::new(browser::BrowserManager::default()),
                 terminal: Mutex::new(terminal::TerminalManager::default()),
                 runtime,
                 _single_instance: single_instance,
@@ -1032,6 +1131,14 @@ pub fn run() {
             list_open_with_targets,
             open_workspace_file_with,
             open_external_url,
+            open_in_app_browser,
+            navigate_in_app_browser,
+            reload_in_app_browser,
+            set_in_app_browser_visible,
+            set_in_app_browser_bounds,
+            toggle_in_app_browser_devtools,
+            clear_in_app_browser_data,
+            set_in_app_browser_inspect_mode,
             save_pasted_image,
             get_git_project,
             read_git_file_diff,

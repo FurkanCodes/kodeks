@@ -19,7 +19,7 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 log = "0.4"
-tauri = { version = "2.10.3", features = [] }
+tauri = { version = "2.10.3", features = ["unstable"] }
 tauri-plugin-log = "2"
 kodeks-core = { path = "../crates/kodeks-core" }
 tokio.workspace = true

@@ -1,3 +1,4 @@
+import { IconTooltip } from '../IconTooltip'
 import { BranchIcon, CloseIcon } from './icons'
 
 type GitBranchBlockedDialogProps = {
@@ -35,10 +36,11 @@ export function GitBranchBlockedDialog(props: GitBranchBlockedDialogProps) {
           <button
             type="button"
             onClick={props.onClose}
-            className="flex size-9 items-center justify-center rounded-[12px] border border-white/7 bg-white/[0.03] text-neutral-400 transition hover:bg-white/[0.055] hover:text-white"
+            className="group relative flex size-9 items-center justify-center rounded-[12px] border border-white/7 bg-white/[0.03] text-neutral-400 transition hover:bg-white/[0.055] hover:text-white"
             title="Close"
           >
             <CloseIcon className="h-3.5 w-3.5" />
+            <IconTooltip label="Close" />
           </button>
         </div>
 

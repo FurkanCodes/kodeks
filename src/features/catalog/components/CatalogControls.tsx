@@ -1,6 +1,7 @@
 import { ChevronDown, MoreHorizontal, Plus, Search, Settings2 } from 'lucide-react'
 import type { RefObject } from 'react'
 import { LazyMotion, domAnimation, m, useReducedMotion } from 'motion/react'
+import { IconTooltip } from '../../../components/IconTooltip'
 import type { CatalogTab } from '../models'
 
 type FilterOption = {
@@ -102,13 +103,14 @@ export function CatalogControls(props: CatalogControlsProps) {
               type="button"
               aria-label="More actions"
               onClick={() => props.onOverflowToggle()}
-              className={`flex size-10 items-center justify-center rounded-[12px] transition ${
+              className={`group relative flex size-10 items-center justify-center rounded-[12px] transition ${
                 props.overflowOpen
                   ? 'bg-[color:var(--color-shell-elevated-strong)] text-white'
                   : 'bg-[color:var(--color-shell-control)] text-[color:var(--color-shell-muted)] hover:bg-[color:var(--color-shell-control-hover)] hover:text-white'
               }`}
             >
               <MoreHorizontal className="h-4 w-4" />
+              <IconTooltip label="More actions" />
             </button>
 
             {props.overflowOpen ? (
