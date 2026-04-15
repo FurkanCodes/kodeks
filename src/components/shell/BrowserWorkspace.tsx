@@ -6,6 +6,7 @@ import type {
   InAppBrowserInspectEvent,
 } from '../../lib/kodeks'
 import {
+  CookieIcon,
   CrosshairIcon,
   DatabaseIcon,
   EraserIcon,
@@ -291,6 +292,8 @@ export function BrowserWorkspace(props: BrowserWorkspaceProps) {
               <DatabaseIcon className="h-3.5 w-3.5" />
             ) : action.target === 'system_storage' ? (
               <EraserIcon className="h-3.5 w-3.5" />
+            ) : action.target === 'cookies' ? (
+              <CookieIcon className="h-3.5 w-3.5" />
             ) : (
               <RefreshIcon className="h-3.5 w-3.5" />
             )}

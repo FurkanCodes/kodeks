@@ -11,6 +11,7 @@ import {
   CircleGauge,
   CloudOff,
   Columns2,
+  Cookie,
   Copy,
   CreditCard,
   FolderOpen,
@@ -277,6 +278,10 @@ export function CrosshairIcon(props: IconProps) {
 
 export function EraserIcon(props: IconProps) {
   return renderIcon(Eraser, props, 1.25)
+}
+
+export function CookieIcon(props: IconProps) {
+  return renderIcon(Cookie, props, 1.25)
 }
 
 export function SidebarCollapseIcon(props: IconProps) {
