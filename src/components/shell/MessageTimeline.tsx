@@ -14,6 +14,7 @@ import {
   parseExactMarkdownInlineToken,
   type ExactMarkdownInlineToken,
 } from '../../lib/messageMarkdown'
+import type { ResolvedWorkspaceReference } from '../../lib/shellState'
 import {
   BranchIcon,
   ChevronIcon,
@@ -24,9 +25,9 @@ import {
   TerminalIcon,
 } from './icons'
 
-const FILE_TOKEN_PATTERN = String.raw`(?:\/Users\/[^\s)]+|(?:[\w.-]+\/)*[\w.-]+\.(?:tsx?|jsx?|py|rs|json|md|css|html|toml|ya?ml))(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?)?(?:\s+\(line\s+\d+\))?`
-const FILE_TOKEN_REGEX = new RegExp(`(${FILE_TOKEN_PATTERN})`, 'g')
-const FILE_TOKEN_EXACT_REGEX = new RegExp(`^${FILE_TOKEN_PATTERN}$`)
+const WORKSPACE_PATH_TOKEN_PATTERN = String.raw`(?:\/Users\/[^\s)]+|(?:[\w.-]+\/)*[\w.-]+\.(?:tsx?|jsx?|py|rs|json|md|css|html|toml|ya?ml)(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?)?(?:\s+\(line\s+\d+\))?|(?:[\w.-]+\/)+[\w.-]+\/?)`
+const WORKSPACE_PATH_TOKEN_REGEX = new RegExp(`(${WORKSPACE_PATH_TOKEN_PATTERN})`, 'g')
+const WORKSPACE_PATH_TOKEN_EXACT_REGEX = new RegExp(`^${WORKSPACE_PATH_TOKEN_PATTERN}$`)
 const INLINE_TOKEN_REGEX =
   /(!\[[^\]]*\]\([^)]+\)|`[^`\n]+`|\[[^\]]+\]\([^)]+\)|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_)/g
 
@@ -106,9 +107,10 @@ type MessageTimelineProps = {
   scrollContainerRef?: RefObject<HTMLDivElement | null>
   onSuggestionSelect?: (value: string) => void
   onOpenFileReference?: (path: string) => void
+  onOpenFolderReference?: (path: string) => void
   onOpenChangeReference?: (path: string) => void
   onOpenExternalFile?: (path: string) => void
-  resolveFileReference?: (token: string) => string | null
+  resolveWorkspaceReference?: (token: string) => ResolvedWorkspaceReference | null
 }
 
 function MessageBlock(props: { tone: 'error' | 'muted'; lines: string[] }) {
@@ -146,8 +148,9 @@ function MessageBlock(props: { tone: 'error' | 'muted'; lines: string[] }) {
 
 function renderInlineContent(
   text: string,
-  resolveFileReference?: (token: string) => string | null,
+  resolveWorkspaceReference?: (token: string) => ResolvedWorkspaceReference | null,
   onOpenFileReference?: (path: string) => void,
+  onOpenFolderReference?: (path: string) => void,
   onOpenExternalFile?: (path: string) => void,
   keyPrefix = 'inline',
 ) {
@@ -163,19 +166,21 @@ function renderInlineContent(
       if (inlineMarkdownToken) {
         return renderMarkdownInlineToken(
           inlineMarkdownToken,
-          resolveFileReference,
+          resolveWorkspaceReference,
           onOpenFileReference,
+          onOpenFolderReference,
           onOpenExternalFile,
           `${keyPrefix}-code-md-${index}`,
         )
       }
 
-      if (looksLikeFileReference(inlineValue)) {
-        return renderFileChip(
+      if (looksLikeWorkspacePathReference(inlineValue)) {
+        return renderWorkspacePathChip(
           inlineValue,
           inlineValue,
-          resolveFileReference,
+          resolveWorkspaceReference,
           onOpenFileReference,
+          onOpenFolderReference,
           onOpenExternalFile,
           `${keyPrefix}-code-file-${index}`,
           false,
@@ -197,8 +202,9 @@ function renderInlineContent(
     if (markdownToken) {
       return renderMarkdownInlineToken(
         markdownToken,
-        resolveFileReference,
+        resolveWorkspaceReference,
         onOpenFileReference,
+        onOpenFolderReference,
         onOpenExternalFile,
         `${keyPrefix}-md-${index}`,
       )
@@ -213,8 +219,9 @@ function renderInlineContent(
         <strong className="font-semibold text-neutral-50" key={`${keyPrefix}-strong-${index}`}>
           {renderFileTokens(
             strongText,
-            resolveFileReference,
+            resolveWorkspaceReference,
             onOpenFileReference,
+            onOpenFolderReference,
             onOpenExternalFile,
             `${keyPrefix}-strong-text-${index}`,
           )}
@@ -227,8 +234,9 @@ function renderInlineContent(
         <del className="text-neutral-400/90 line-through" key={`${keyPrefix}-strike-${index}`}>
           {renderFileTokens(
             part.slice(2, -2),
-            resolveFileReference,
+            resolveWorkspaceReference,
             onOpenFileReference,
+            onOpenFolderReference,
             onOpenExternalFile,
             `${keyPrefix}-strike-text-${index}`,
           )}
@@ -244,8 +252,9 @@ function renderInlineContent(
         <em className="italic text-neutral-100" key={`${keyPrefix}-em-${index}`}>
           {renderFileTokens(
             part.slice(1, -1),
-            resolveFileReference,
+            resolveWorkspaceReference,
             onOpenFileReference,
+            onOpenFolderReference,
             onOpenExternalFile,
             `${keyPrefix}-em-text-${index}`,
           )}
@@ -255,8 +264,9 @@ function renderInlineContent(
 
     return renderFileTokens(
       part,
-      resolveFileReference,
+      resolveWorkspaceReference,
       onOpenFileReference,
+      onOpenFolderReference,
       onOpenExternalFile,
       `${keyPrefix}-text-${index}`,
     )
@@ -265,8 +275,9 @@ function renderInlineContent(
 
 function renderMarkdownInlineToken(
   token: ExactMarkdownInlineToken,
-  resolveFileReference?: (token: string) => string | null,
+  resolveWorkspaceReference?: (token: string) => ResolvedWorkspaceReference | null,
   onOpenFileReference?: (path: string) => void,
+  onOpenFolderReference?: (path: string) => void,
   onOpenExternalFile?: (path: string) => void,
   key?: string,
 ) {
@@ -295,11 +306,12 @@ function renderMarkdownInlineToken(
     )
   }
 
-  return renderFileChip(
+  return renderWorkspacePathChip(
     token.label,
     token.target,
-    resolveFileReference,
+    resolveWorkspaceReference,
     onOpenFileReference,
+    onOpenFolderReference,
     onOpenExternalFile,
     key,
   )
@@ -307,8 +319,9 @@ function renderMarkdownInlineToken(
 
 function renderContent(
   content: string,
-  resolveFileReference?: (token: string) => string | null,
+  resolveWorkspaceReference?: (token: string) => ResolvedWorkspaceReference | null,
   onOpenFileReference?: (path: string) => void,
+  onOpenFolderReference?: (path: string) => void,
   onOpenExternalFile?: (path: string) => void,
 ) {
   const lines = content.replace(/\r\n?/g, '\n').split('\n')
@@ -343,8 +356,9 @@ function renderContent(
       >
         {renderInlineContent(
           paragraph,
-          resolveFileReference,
+          resolveWorkspaceReference,
           onOpenFileReference,
+          onOpenFolderReference,
           onOpenExternalFile,
           `paragraph-${blockIndex}`,
         )}
@@ -403,8 +417,9 @@ function renderContent(
           content={trimmedLine}
           key={`heading-${blockIndex}`}
           level={1}
-          resolveFileReference={resolveFileReference}
+          resolveWorkspaceReference={resolveWorkspaceReference}
           onOpenFileReference={onOpenFileReference}
+          onOpenFolderReference={onOpenFolderReference}
           onOpenExternalFile={onOpenExternalFile}
         />,
       )
@@ -419,8 +434,9 @@ function renderContent(
           content={trimmedLine}
           key={`heading-${blockIndex}`}
           level={2}
-          resolveFileReference={resolveFileReference}
+          resolveWorkspaceReference={resolveWorkspaceReference}
           onOpenFileReference={onOpenFileReference}
+          onOpenFolderReference={onOpenFolderReference}
           onOpenExternalFile={onOpenExternalFile}
         />,
       )
@@ -436,8 +452,9 @@ function renderContent(
           content={headingMatch[2] || ''}
           key={`heading-${blockIndex}`}
           level={headingMatch[1]?.length || 1}
-          resolveFileReference={resolveFileReference}
+          resolveWorkspaceReference={resolveWorkspaceReference}
           onOpenFileReference={onOpenFileReference}
+          onOpenFolderReference={onOpenFolderReference}
           onOpenExternalFile={onOpenExternalFile}
         />,
       )
@@ -482,8 +499,9 @@ function renderContent(
                   >
                     {renderInlineContent(
                       header,
-                      resolveFileReference,
+                      resolveWorkspaceReference,
                       onOpenFileReference,
+                      onOpenFolderReference,
                       onOpenExternalFile,
                       `table-head-${blockIndex}-${headerIndex}`,
                     )}
@@ -501,8 +519,9 @@ function renderContent(
                     >
                       {renderInlineContent(
                         row[columnIndex] || '',
-                        resolveFileReference,
+                        resolveWorkspaceReference,
                         onOpenFileReference,
+                        onOpenFolderReference,
                         onOpenExternalFile,
                         `table-cell-${blockIndex}-${rowIndex}-${columnIndex}`,
                       )}
@@ -537,8 +556,9 @@ function renderContent(
         >
           {renderInlineContent(
             quoteLines.join(' '),
-            resolveFileReference,
+            resolveWorkspaceReference,
             onOpenFileReference,
+            onOpenFolderReference,
             onOpenExternalFile,
             `quote-${blockIndex}`,
           )}
@@ -586,8 +606,9 @@ function renderContent(
               <li className="whitespace-pre-wrap text-neutral-200/92" key={`ordered-item-${blockIndex}-${itemIndex}`}>
                 {renderInlineContent(
                   item.text,
-                  resolveFileReference,
+                  resolveWorkspaceReference,
                   onOpenFileReference,
+                  onOpenFolderReference,
                   onOpenExternalFile,
                   `ordered-${blockIndex}-${itemIndex}`,
                 )}
@@ -615,8 +636,9 @@ function renderContent(
                 <span>
                   {renderInlineContent(
                     item.text,
-                    resolveFileReference,
+                    resolveWorkspaceReference,
                     onOpenFileReference,
+                    onOpenFolderReference,
                     onOpenExternalFile,
                     `list-${blockIndex}-${itemIndex}`,
                   )}
@@ -640,19 +662,21 @@ function renderContent(
 
 function renderFileTokens(
   text: string,
-  resolveFileReference?: (token: string) => string | null,
+  resolveWorkspaceReference?: (token: string) => ResolvedWorkspaceReference | null,
   onOpenFileReference?: (path: string) => void,
+  onOpenFolderReference?: (path: string) => void,
   onOpenExternalFile?: (path: string) => void,
   keyPrefix = 'part',
 ) {
-  const parts = text.split(FILE_TOKEN_REGEX)
+  const parts = text.split(WORKSPACE_PATH_TOKEN_REGEX)
 
   return parts.map((part, index) =>
-    renderFileChip(
+    renderWorkspacePathChip(
       part,
       part,
-      resolveFileReference,
+      resolveWorkspaceReference,
       onOpenFileReference,
+      onOpenFolderReference,
       onOpenExternalFile,
       `${keyPrefix}-${index}`,
       true,
@@ -660,34 +684,51 @@ function renderFileTokens(
   )
 }
 
-function renderFileChip(
+function renderWorkspacePathChip(
   label: string,
   target: string,
-  resolveFileReference?: (token: string) => string | null,
+  resolveWorkspaceReference?: (token: string) => ResolvedWorkspaceReference | null,
   onOpenFileReference?: (path: string) => void,
+  onOpenFolderReference?: (path: string) => void,
   onOpenExternalFile?: (path: string) => void,
   key?: string,
   allowPlainText = false,
-  variant: 'inline' | 'code' = 'inline',
+  variant: 'inline' | 'code' = 'code',
 ) {
   const normalizedTarget = normalizeReferenceTarget(target)
   const normalizedLabel = normalizeReferenceTarget(label)
-  const workspaceTarget = resolveFileReference?.(normalizedTarget) || resolveFileReference?.(normalizedLabel)
+  const workspaceTarget =
+    resolveWorkspaceReference?.(normalizedTarget) || resolveWorkspaceReference?.(normalizedLabel)
   const externalTarget = workspaceTarget ? null : normalizeLocalPath(normalizedTarget)
-  const isFileToken = FILE_TOKEN_EXACT_REGEX.test(target) || FILE_TOKEN_EXACT_REGEX.test(label)
+  const isPathToken =
+    WORKSPACE_PATH_TOKEN_EXACT_REGEX.test(target) || WORKSPACE_PATH_TOKEN_EXACT_REGEX.test(label)
   const sharedClassName =
     variant === 'code'
       ? 'mx-[0.05em] inline rounded-md border border-white/7 bg-white/[0.05] px-1.5 py-0.5 font-mono text-[0.92em] text-[#9dbbf0] transition hover:text-[#bdd0f8]'
       : 'inline text-left text-[0.98em] font-medium text-[#9dbbf0] decoration-[#9dbbf0]/0 underline-offset-3 transition hover:text-[#bdd0f8] hover:decoration-[#bdd0f8]/40'
 
-  if (workspaceTarget && onOpenFileReference) {
+  if (workspaceTarget?.kind === 'file' && onOpenFileReference) {
     return (
       <button
         type="button"
         key={key}
-        title={workspaceTarget}
+        title={workspaceTarget.path}
         className={sharedClassName}
-        onClick={() => onOpenFileReference(workspaceTarget)}
+        onClick={() => onOpenFileReference(workspaceTarget.path)}
+      >
+        <span>{label}</span>
+      </button>
+    )
+  }
+
+  if (workspaceTarget?.kind === 'folder' && onOpenFolderReference) {
+    return (
+      <button
+        type="button"
+        key={key}
+        title={workspaceTarget.path}
+        className={sharedClassName}
+        onClick={() => onOpenFolderReference(workspaceTarget.path)}
       >
         <span>{label}</span>
       </button>
@@ -709,7 +750,7 @@ function renderFileChip(
   }
 
   if (allowPlainText) {
-    return <span className={isFileToken ? 'text-neutral-100' : undefined} key={key}>{label}</span>
+    return <span className={isPathToken ? 'text-neutral-100' : undefined} key={key}>{label}</span>
   }
 
   return <span key={key}>{label || target}</span>
@@ -720,7 +761,7 @@ function normalizeLocalPath(value: string) {
   if (!trimmed.startsWith('/')) {
     return null
   }
-  return /\.[a-z0-9]+$/i.test(trimmed) ? trimmed : null
+  return trimmed
 }
 
 function normalizeReferenceTarget(value: string) {
@@ -731,8 +772,8 @@ function normalizeReferenceTarget(value: string) {
     .replace(/:\d+(?::\d+)?$/i, '')
 }
 
-function looksLikeFileReference(value: string) {
-  return FILE_TOKEN_EXACT_REGEX.test(value.trim())
+function looksLikeWorkspacePathReference(value: string) {
+  return WORKSPACE_PATH_TOKEN_EXACT_REGEX.test(value.trim())
 }
 
 function looksLikeWebUrl(value: string) {
@@ -780,8 +821,9 @@ function toImageSource(value: string) {
 function MarkdownHeading(props: {
   level: number
   content: string
-  resolveFileReference?: (token: string) => string | null
+  resolveWorkspaceReference?: (token: string) => ResolvedWorkspaceReference | null
   onOpenFileReference?: (path: string) => void
+  onOpenFolderReference?: (path: string) => void
   onOpenExternalFile?: (path: string) => void
 }) {
   const className =
@@ -797,8 +839,9 @@ function MarkdownHeading(props: {
     <div className={className}>
       {renderInlineContent(
         props.content,
-        props.resolveFileReference,
+        props.resolveWorkspaceReference,
         props.onOpenFileReference,
+        props.onOpenFolderReference,
         props.onOpenExternalFile,
         `heading-${props.level}-${props.content}`,
       )}
@@ -837,9 +880,10 @@ function MessageItem(props: {
   message: ChatMessage
   highlighted?: boolean
   onOpenFileReference?: (path: string) => void
+  onOpenFolderReference?: (path: string) => void
   onOpenChangeReference?: (path: string) => void
   onOpenExternalFile?: (path: string) => void
-  resolveFileReference?: (token: string) => string | null
+  resolveWorkspaceReference?: (token: string) => ResolvedWorkspaceReference | null
 }) {
   const isUser = props.message.tone === 'user'
   const isTrace = props.message.presentation === 'trace'
@@ -877,8 +921,9 @@ function MessageItem(props: {
   ) : (
     renderContent(
       props.message.text,
-      props.resolveFileReference,
+      props.resolveWorkspaceReference,
       props.onOpenFileReference,
+      props.onOpenFolderReference,
       props.onOpenExternalFile,
     )
   )
@@ -1556,9 +1601,10 @@ export function MessageTimeline(props: MessageTimelineProps) {
           message={message}
           highlighted={props.focusedMessageId === message.id}
           onOpenFileReference={props.onOpenFileReference}
+          onOpenFolderReference={props.onOpenFolderReference}
           onOpenChangeReference={props.onOpenChangeReference}
           onOpenExternalFile={props.onOpenExternalFile}
-          resolveFileReference={props.resolveFileReference}
+          resolveWorkspaceReference={props.resolveWorkspaceReference}
         />
       ))}
       {props.liveStatus ? <LiveStatusRow status={props.liveStatus} /> : null}

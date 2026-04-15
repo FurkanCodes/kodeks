@@ -19,6 +19,13 @@ export type SidebarGroup = {
   threads: SidebarThread[]
 }
 
+export type WorkspaceReferenceKind = 'file' | 'folder'
+
+export type ResolvedWorkspaceReference = {
+  path: string
+  kind: WorkspaceReferenceKind
+}
+
 export function projectRootForThread(thread: Snapshot['threads'][number]) {
   const rootPath = thread.repo || thread.cwd || null
   return rootPath ? normalizeProjectRoot(rootPath) : null
@@ -150,22 +157,96 @@ function threadAccountTag(
 }
 
 export function resolveWorkspaceReference(token: string, workspaceFiles: string[]) {
+  return resolveWorkspacePathReference(token, workspaceFiles)?.path ?? null
+}
+
+export function resolveWorkspacePathReference(
+  token: string,
+  workspaceFiles: string[],
+): ResolvedWorkspaceReference | null {
   const normalized = normalizeWorkspaceReferenceToken(token)
   if (!normalized) {
     return null
   }
 
-  if (workspaceFiles.includes(normalized)) {
-    return normalized
+  const folders = collectWorkspaceFolders(workspaceFiles)
+  const candidates = [...workspaceFiles, ...folders]
+  const resolvedPath = resolveWorkspaceCandidate(normalized, candidates)
+  if (!resolvedPath) {
+    return null
   }
 
-  const exactTail = workspaceFiles.filter((file) => tailPath(file) === tailPath(normalized))
-  if (exactTail.length === 1) {
-    return exactTail[0]
+  const fileSet = new Set(workspaceFiles)
+  return {
+    path: resolvedPath,
+    kind: fileSet.has(resolvedPath) ? 'file' : 'folder',
+  }
+}
+
+function resolveWorkspaceCandidate(token: string, candidates: string[]) {
+  if (candidates.includes(token)) {
+    return token
   }
 
-  const pathMatch = workspaceFiles.find((file) => file.endsWith(normalized))
-  return pathMatch || null
+  const tokenTail = tailPath(token)
+
+  const exactTailMatches = candidates.filter((candidate) => tailPath(candidate) === tokenTail)
+  if (exactTailMatches.length === 1) {
+    return exactTailMatches[0]
+  }
+
+  const exactSuffixMatches = candidates.filter((candidate) => candidate.endsWith(token))
+  if (exactSuffixMatches.length === 1) {
+    return exactSuffixMatches[0]
+  }
+
+  const loweredToken = token.toLowerCase()
+  const loweredTail = tokenTail.toLowerCase()
+
+  const caseInsensitiveExact = candidates.filter(
+    (candidate) => candidate.toLowerCase() === loweredToken,
+  )
+  if (caseInsensitiveExact.length === 1) {
+    return caseInsensitiveExact[0]
+  }
+
+  const caseInsensitiveTail = candidates.filter(
+    (candidate) => tailPath(candidate).toLowerCase() === loweredTail,
+  )
+  if (caseInsensitiveTail.length === 1) {
+    return caseInsensitiveTail[0]
+  }
+
+  const caseInsensitiveSuffix = candidates.filter((candidate) =>
+    candidate.toLowerCase().endsWith(loweredToken),
+  )
+  if (caseInsensitiveSuffix.length === 1) {
+    return caseInsensitiveSuffix[0]
+  }
+
+  return null
+}
+
+function collectWorkspaceFolders(workspaceFiles: string[]) {
+  const folders = new Set<string>()
+
+  for (const file of workspaceFiles) {
+    const normalized = file.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    if (!normalized) {
+      continue
+    }
+
+    const segments = normalized.split('/').filter(Boolean)
+    if (segments.length < 2) {
+      continue
+    }
+
+    for (let index = 1; index < segments.length; index += 1) {
+      folders.add(segments.slice(0, index).join('/'))
+    }
+  }
+
+  return [...folders]
 }
 
 function normalizeWorkspaceReferenceToken(token: string) {
@@ -176,6 +257,7 @@ function normalizeWorkspaceReferenceToken(token: string) {
     .replace(/\s+\(line\s+\d+\)$/i, '')
     .replace(/#L\d+(?:C\d+)?$/i, '')
     .replace(/:\d+(?::\d+)?$/i, '')
+    .replace(/\/+$/g, '')
     .trim()
 }
 

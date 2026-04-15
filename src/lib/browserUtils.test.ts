@@ -81,3 +81,51 @@ test('buildBrowserInspectChatMessageText includes only hunt element context', ()
   assert.ok(text.includes('- URL: http://localhost:5173/'))
   assert.ok(!text.includes('Component chain'))
 })
+
+test('buildBrowserInspectComposerDraft includes React component context when present', () => {
+  const draft = buildBrowserInspectComposerDraft({
+    pageUrl: 'http://localhost:5173/',
+    selector: 'div.card',
+    tag: 'div',
+    textSnippet: 'Revenue',
+    reactComponentName: 'StatCard',
+    reactComponentChain: ['StatCard', 'Home', 'ClientPageRoot'],
+    reactComponentSource: 'src/components/StatCard.tsx',
+  })
+
+  assert.ok(draft.includes('- Component: StatCard'))
+  assert.ok(draft.includes('- Component chain: StatCard > Home > ClientPageRoot'))
+  assert.ok(draft.includes('- Component file: src/components/StatCard.tsx'))
+})
+
+test('buildBrowserInspectClipboardText includes React component context when present', () => {
+  const text = buildBrowserInspectClipboardText({
+    pageUrl: 'http://localhost:5173/',
+    selector: 'div.card',
+    tag: 'div',
+    textSnippet: 'Revenue',
+    reactComponentName: 'StatCard',
+    reactComponentChain: ['StatCard', 'Home', 'ClientPageRoot'],
+    reactComponentSource: 'src/components/StatCard.tsx',
+  })
+
+  assert.ok(text.includes('Component: StatCard'))
+  assert.ok(text.includes('Component chain: StatCard > Home > ClientPageRoot'))
+  assert.ok(text.includes('Component file: src/components/StatCard.tsx'))
+})
+
+test('buildBrowserInspectChatMessageText includes React component context when present', () => {
+  const text = buildBrowserInspectChatMessageText({
+    pageUrl: 'http://localhost:5173/',
+    selector: 'div.card',
+    tag: 'div',
+    textSnippet: 'Revenue',
+    reactComponentName: 'StatCard',
+    reactComponentChain: ['StatCard', 'Home', 'ClientPageRoot'],
+    reactComponentSource: 'src/components/StatCard.tsx',
+  })
+
+  assert.ok(text.includes('- Component: StatCard'))
+  assert.ok(text.includes('- Component chain: StatCard > Home > ClientPageRoot'))
+  assert.ok(text.includes('- Component file: [StatCard.tsx](src/components/StatCard.tsx)'))
+})

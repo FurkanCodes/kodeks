@@ -79,6 +79,14 @@ export function BrowserWorkspace(props: BrowserWorkspaceProps) {
   const frameRef = useRef<number | null>(null)
   const viewportDebugSeqRef = useRef(0)
   const [draftUrl, setDraftUrl] = useState(props.currentUrl)
+  const inspectComponentName = (props.inspectResult?.reactComponentName || '').trim()
+  const inspectComponentChain = Array.isArray(props.inspectResult?.reactComponentChain)
+    ? props.inspectResult.reactComponentChain
+      .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+      .filter((entry) => entry.length > 0)
+    : []
+  const inspectComponentSource = (props.inspectResult?.reactComponentSource || '').trim()
+  const showInspectComponentInfo = inspectComponentName.length > 0 || inspectComponentChain.length > 0
 
   const debugViewport = useCallback((event: string, payload?: unknown) => {
     if (!isBrowserViewportDebugEnabled()) {
@@ -322,6 +330,15 @@ export function BrowserWorkspace(props: BrowserWorkspaceProps) {
               <InfoRow label="Selector" value={props.inspectResult.selector || '-'} mono />
               <InfoRow label="Element" value={props.inspectResult.tag || '-'} mono />
               <InfoRow label="Text" value={props.inspectResult.textSnippet || '-'} />
+              {showInspectComponentInfo ? (
+                <InfoRow label="Component" value={inspectComponentName || 'unknown'} mono />
+              ) : null}
+              {inspectComponentChain.length > 0 ? (
+                <InfoRow label="Component chain" value={inspectComponentChain.join(' > ')} />
+              ) : null}
+              {inspectComponentSource ? (
+                <InfoRow label="Component file" value={inspectComponentSource} mono />
+              ) : null}
             </div>
           ) : (
             <p className="leading-[1.55] text-neutral-400">

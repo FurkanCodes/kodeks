@@ -116,7 +116,7 @@ import {
   buildSidebarGroups,
   mostRecentProjectRoot,
   projectRootForThread,
-  resolveWorkspaceReference,
+  resolveWorkspacePathReference,
   type SidebarThread,
 } from './lib/shellState'
 import {
@@ -566,15 +566,12 @@ function App() {
         }
         setBrowserInspectResult(payload)
         setBrowserInspectChatNotes((current) => {
-          const selectedComponent =
-            (payload.selector || '').trim() || (payload.tag || '').trim() || 'selected element'
           const nextMessage: ChatMessage = {
             id: `browser-inspect-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             author: 'System',
             timestamp: formatClockTime(Date.now()),
             tone: 'system',
             text: buildBrowserInspectChatMessageText(payload),
-            workLabel: selectedComponent,
           }
 
           const next = [...current, nextMessage]
@@ -1116,14 +1113,21 @@ function App() {
     let cancelled = false
 
     async function hydrateWorkspaceStore() {
+      const applyLaunchUiDefaults = (store: WorkspaceStore) =>
+        setSidebarCollapsed(setTerminalOpen(store, false), false)
+
       const legacyStore = loadLegacyWorkspaceStore()
 
       try {
         const nativeStore = normalizeWorkspaceStore(await loadNativeWorkspaceStore())
         const resolved = resolvePersistedWorkspaceStore(nativeStore, legacyStore)
+        const hydratedStore = applyLaunchUiDefaults(resolved.store)
+        const launchDefaultsApplied =
+          hydratedStore.ui.terminalOpen !== resolved.store.ui.terminalOpen
+          || hydratedStore.ui.sidebarCollapsed !== resolved.store.ui.sidebarCollapsed
 
-        if (resolved.migratedLegacy) {
-          await saveNativeWorkspaceStore(resolved.store)
+        if (resolved.migratedLegacy || launchDefaultsApplied) {
+          await saveNativeWorkspaceStore(hydratedStore)
         }
 
         clearLegacyWorkspaceStore()
@@ -1132,7 +1136,7 @@ function App() {
         }
 
         startTransition(() => {
-          setWorkspaceStore(resolved.store)
+          setWorkspaceStore(hydratedStore)
           setWorkspaceStoreHydrated(true)
         })
       } catch (nextError) {
@@ -1141,8 +1145,10 @@ function App() {
           return
         }
 
+        const fallbackStore = applyLaunchUiDefaults(legacyStore)
+
         startTransition(() => {
-          setWorkspaceStore(legacyStore)
+          setWorkspaceStore(fallbackStore)
           setWorkspaceStoreHydrated(true)
         })
       }
@@ -2918,9 +2924,12 @@ function App() {
               scrollContainerRef={scrollContainerRef}
               onSuggestionSelect={(value) => void handleSend(value)}
               onOpenFileReference={handleOpenCodePath}
+              onOpenFolderReference={(path) => void handleOpenExternalFile(path)}
               onOpenChangeReference={handleOpenDiffPath}
               onOpenExternalFile={(path) => void handleOpenExternalFile(path)}
-              resolveFileReference={(token) => resolveWorkspaceReference(token, workspaceFiles)}
+              resolveWorkspaceReference={(token) =>
+                resolveWorkspacePathReference(token, workspaceFiles)
+              }
             />
           </div>
         </div>

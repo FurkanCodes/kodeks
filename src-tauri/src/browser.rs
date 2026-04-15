@@ -67,6 +67,218 @@ const INSPECT_INIT_SCRIPT: &str = r#"
     return parts.join(' > ');
   }
 
+  function reactFiberFromNode(node) {
+    if (!(node instanceof Element)) {
+      return null;
+    }
+
+    var cursor = node;
+    while (cursor && cursor.nodeType === Node.ELEMENT_NODE) {
+      var keys = Object.keys(cursor);
+      for (var index = 0; index < keys.length; index += 1) {
+        var key = keys[index];
+        if (
+          key.indexOf('__reactFiber$') === 0
+          || key.indexOf('__reactInternalInstance$') === 0
+        ) {
+          var candidate = cursor[key];
+          if (candidate && typeof candidate === 'object') {
+            return candidate;
+          }
+        }
+      }
+      cursor = cursor.parentElement;
+    }
+
+    return null;
+  }
+
+  function reactTypeDisplayName(type) {
+    if (!type) {
+      return '';
+    }
+
+    if (typeof type === 'string') {
+      return type;
+    }
+
+    if (typeof type === 'function') {
+      var fnName = type.displayName || type.name || '';
+      return typeof fnName === 'string' ? fnName.trim() : '';
+    }
+
+    if (typeof type === 'object') {
+      if (typeof type.displayName === 'string' && type.displayName.trim()) {
+        return type.displayName.trim();
+      }
+
+      if (typeof type.name === 'string' && type.name.trim()) {
+        return type.name.trim();
+      }
+
+      if (type.render) {
+        var renderName = reactTypeDisplayName(type.render);
+        if (renderName) {
+          return 'ForwardRef(' + renderName + ')';
+        }
+      }
+
+      if (type.type) {
+        var innerName = reactTypeDisplayName(type.type);
+        if (innerName) {
+          return 'Memo(' + innerName + ')';
+        }
+      }
+    }
+
+    return '';
+  }
+
+  function isComponentDisplayName(name) {
+    if (!name) {
+      return false;
+    }
+    if (name.indexOf('Memo(') === 0 || name.indexOf('ForwardRef(') === 0) {
+      return true;
+    }
+    return /^[A-Z]/.test(name);
+  }
+
+  function reactFiberDisplayName(fiber) {
+    if (!fiber || typeof fiber !== 'object') {
+      return '';
+    }
+
+    var name = reactTypeDisplayName(fiber.type || fiber.elementType || null);
+    if (!name || !isComponentDisplayName(name)) {
+      return '';
+    }
+    return name;
+  }
+
+  function normalizeComponentSourcePath(rawPath) {
+    if (typeof rawPath !== 'string') {
+      return '';
+    }
+
+    var value = rawPath.trim();
+    if (!value) {
+      return '';
+    }
+
+    if (value.indexOf('file://') === 0) {
+      try {
+        value = new URL(value).pathname || value;
+      } catch (_) {
+      }
+    }
+
+    try {
+      value = decodeURIComponent(value);
+    } catch (_) {
+    }
+
+    value = value
+      .replace(/^webpack-internal:\/\/\/\.?\/?/, '')
+      .replace(/^webpack:\/\/\/\.?\/?/, '')
+      .replace(/^\/@fs\//, '/')
+      .replace(/\?.*$/, '')
+      .replace(/#.*$/, '')
+      .replace(/\\/g, '/');
+
+    var srcIndex = value.lastIndexOf('/src/');
+    if (srcIndex >= 0) {
+      return value.slice(srcIndex + 1);
+    }
+
+    var appIndex = value.lastIndexOf('/app/');
+    if (appIndex >= 0) {
+      return value.slice(appIndex + 1);
+    }
+
+    var componentsIndex = value.lastIndexOf('/components/');
+    if (componentsIndex >= 0) {
+      return value.slice(componentsIndex + 1);
+    }
+
+    if (value.startsWith('/')) {
+      return value;
+    }
+
+    return value.replace(/^\.?\//, '');
+  }
+
+  function reactFiberSourcePath(fiber) {
+    if (!fiber || typeof fiber !== 'object') {
+      return '';
+    }
+
+    var source = fiber._debugSource;
+    if (!source && fiber._debugOwner && typeof fiber._debugOwner === 'object') {
+      source = fiber._debugOwner._debugSource;
+    }
+
+    if (!source || typeof source !== 'object') {
+      return '';
+    }
+
+    var fileName = typeof source.fileName === 'string' ? source.fileName : '';
+    return normalizeComponentSourcePath(fileName);
+  }
+
+  function reactMetadataFor(node) {
+    var empty = {
+      reactComponentName: null,
+      reactComponentChain: [],
+      reactComponentSource: null
+    };
+
+    try {
+      var start = reactFiberFromNode(node);
+      if (!start) {
+        return empty;
+      }
+
+      var chain = [];
+      var seen = new Set();
+      var cursor = start;
+      var depth = 0;
+      var maxDepth = 120;
+      var sourcePath = null;
+
+      while (cursor && depth < maxDepth) {
+        if (seen.has(cursor)) {
+          break;
+        }
+        seen.add(cursor);
+
+        var name = reactFiberDisplayName(cursor);
+        if (name) {
+          if (chain.length === 0 || chain[chain.length - 1] !== name) {
+            chain.push(name);
+          }
+          if (!sourcePath) {
+            var maybeSourcePath = reactFiberSourcePath(cursor);
+            if (maybeSourcePath) {
+              sourcePath = maybeSourcePath;
+            }
+          }
+        }
+
+        cursor = cursor.return || null;
+        depth += 1;
+      }
+
+      return {
+        reactComponentName: chain.length > 0 ? chain[0] : null,
+        reactComponentChain: chain,
+        reactComponentSource: sourcePath
+      };
+    } catch (_) {
+      return empty;
+    }
+  }
+
   function emitSelection(payload) {
     try {
       var encoded = encodeURIComponent(JSON.stringify(payload));
@@ -226,6 +438,7 @@ const INSPECT_INIT_SCRIPT: &str = r#"
     var target = event.target;
     setHighlight(target);
     showTooltip(target, event.clientX, event.clientY);
+    var reactMeta = reactMetadataFor(target);
     emitSelection({
       pageUrl: window.location.href,
       selector: selectorFor(target),
@@ -233,6 +446,9 @@ const INSPECT_INIT_SCRIPT: &str = r#"
       id: target.id || null,
       className: target.className || null,
       textSnippet: textSnippet(target),
+      reactComponentName: reactMeta.reactComponentName,
+      reactComponentChain: reactMeta.reactComponentChain,
+      reactComponentSource: reactMeta.reactComponentSource,
       timestamp: Date.now()
     });
   }
@@ -374,6 +590,10 @@ pub struct BrowserInspectEvent {
     pub id: Option<String>,
     pub class_name: Option<String>,
     pub text_snippet: Option<String>,
+    pub react_component_name: Option<String>,
+    #[serde(default)]
+    pub react_component_chain: Vec<String>,
+    pub react_component_source: Option<String>,
     pub timestamp: Option<i64>,
 }
 
@@ -618,6 +838,9 @@ mod tests {
         assert_eq!(event.text_snippet.as_deref(), Some("Save"));
         assert_eq!(event.id.as_deref(), Some("save-btn"));
         assert_eq!(event.class_name.as_deref(), Some("primary"));
+        assert_eq!(event.react_component_name.as_deref(), None);
+        assert!(event.react_component_chain.is_empty());
+        assert_eq!(event.react_component_source.as_deref(), None);
     }
 
     #[test]
@@ -629,6 +852,9 @@ mod tests {
             "id": "hero-title",
             "className": "hero-title",
             "textSnippet": "Hero title",
+            "reactComponentName": "StatCard",
+            "reactComponentChain": ["StatCard", "Home", "ClientPageRoot"],
+            "reactComponentSource": "src/components/StatCard.tsx",
             "timestamp": 123456
         });
 
@@ -639,6 +865,19 @@ mod tests {
         assert_eq!(event.id.as_deref(), Some("hero-title"));
         assert_eq!(event.class_name.as_deref(), Some("hero-title"));
         assert_eq!(event.text_snippet.as_deref(), Some("Hero title"));
+        assert_eq!(event.react_component_name.as_deref(), Some("StatCard"));
+        assert_eq!(
+            event.react_component_chain,
+            vec![
+                "StatCard".to_string(),
+                "Home".to_string(),
+                "ClientPageRoot".to_string(),
+            ]
+        );
+        assert_eq!(
+            event.react_component_source.as_deref(),
+            Some("src/components/StatCard.tsx")
+        );
         assert_eq!(event.timestamp, Some(123456));
     }
 }

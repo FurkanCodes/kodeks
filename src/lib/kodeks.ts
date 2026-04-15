@@ -343,6 +343,9 @@ export type InAppBrowserInspectEvent = {
   id?: string | null
   className?: string | null
   textSnippet?: string | null
+  reactComponentName?: string | null
+  reactComponentChain?: string[]
+  reactComponentSource?: string | null
   timestamp?: number | null
 }
 

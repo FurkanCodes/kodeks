@@ -65,8 +65,39 @@ function normalizedTextSnippet(payload: InAppBrowserInspectEvent) {
   return (payload.textSnippet || '').trim() || '-'
 }
 
+function normalizedReactComponentName(payload: InAppBrowserInspectEvent) {
+  const normalized = (payload.reactComponentName || '').trim()
+  return normalized || null
+}
+
+function normalizedReactComponentChain(payload: InAppBrowserInspectEvent) {
+  const chain = payload.reactComponentChain
+  if (!Array.isArray(chain)) {
+    return [] as string[]
+  }
+
+  return chain
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry) => entry.length > 0)
+}
+
+function normalizedReactComponentSource(payload: InAppBrowserInspectEvent) {
+  const source = (payload.reactComponentSource || '').trim()
+  return source || null
+}
+
+function tailPath(value: string) {
+  const normalized = value.trim().replace(/\\/g, '/')
+  const tail = normalized.split('/').filter(Boolean).pop()
+  return tail || normalized
+}
+
 export function buildBrowserInspectComposerDraft(payload: InAppBrowserInspectEvent) {
   const selectedElement = selectedElementLabel(payload)
+  const componentName = normalizedReactComponentName(payload)
+  const componentChain = normalizedReactComponentChain(payload)
+  const componentSource = normalizedReactComponentSource(payload)
+  const hasReactContext = componentName !== null || componentChain.length > 0
 
   const lines = [
     'Inspect selection from in-app browser:',
@@ -79,22 +110,68 @@ export function buildBrowserInspectComposerDraft(payload: InAppBrowserInspectEve
     'Use this context to locate the element and apply the requested UI change.',
   ]
 
+  if (hasReactContext) {
+    const reactLines = [`- Component: ${componentName || 'unknown'}`]
+    if (componentChain.length > 0) {
+      reactLines.push(`- Component chain: ${componentChain.join(' > ')}`)
+    }
+    if (componentSource) {
+      reactLines.push(`- Component file: ${componentSource}`)
+    }
+    lines.splice(6, 0, ...reactLines)
+  }
+
   return lines.join('\n')
 }
 
 export function buildBrowserInspectClipboardText(payload: InAppBrowserInspectEvent) {
   const selectedElement = selectedElementLabel(payload)
-  return `Element: ${selectedElement}\nSelector: ${payload.selector || '-'}\nText: ${normalizedTextSnippet(payload)}\nURL: ${payload.pageUrl || '-'}`
+  const componentName = normalizedReactComponentName(payload)
+  const componentChain = normalizedReactComponentChain(payload)
+  const componentSource = normalizedReactComponentSource(payload)
+  const lines = [
+    `Element: ${selectedElement}`,
+    `Selector: ${payload.selector || '-'}`,
+    `Text: ${normalizedTextSnippet(payload)}`,
+    `URL: ${payload.pageUrl || '-'}`,
+  ]
+
+  if (componentName || componentChain.length > 0) {
+    lines.push(`Component: ${componentName || 'unknown'}`)
+    if (componentChain.length > 0) {
+      lines.push(`Component chain: ${componentChain.join(' > ')}`)
+    }
+    if (componentSource) {
+      lines.push(`Component file: ${componentSource}`)
+    }
+  }
+
+  return lines.join('\n')
 }
 
 export function buildBrowserInspectChatMessageText(payload: InAppBrowserInspectEvent) {
   const selectedElement = selectedElementLabel(payload)
+  const componentName = normalizedReactComponentName(payload)
+  const componentChain = normalizedReactComponentChain(payload)
+  const componentSource = normalizedReactComponentSource(payload)
 
-  return [
+  const lines = [
     `Element selected in browser: ${selectedElement}`,
     `- Selector: ${payload.selector || '-'}`,
     `- Element: ${payload.tag || '-'}`,
     `- Text: ${normalizedTextSnippet(payload)}`,
     `- URL: ${payload.pageUrl || '-'}`,
-  ].join('\n')
+  ]
+
+  if (componentName || componentChain.length > 0) {
+    lines.push(`- Component: ${componentName || 'unknown'}`)
+    if (componentChain.length > 0) {
+      lines.push(`- Component chain: ${componentChain.join(' > ')}`)
+    }
+    if (componentSource) {
+      lines.push(`- Component file: [${tailPath(componentSource)}](${componentSource})`)
+    }
+  }
+
+  return lines.join('\n')
 }

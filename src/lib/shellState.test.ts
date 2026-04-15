@@ -5,6 +5,7 @@ import {
   buildSidebarGroups,
   extractReferenceQuery,
   mostRecentProjectRoot,
+  resolveWorkspacePathReference,
   resolveWorkspaceReference,
 } from './shellState.ts'
 import type { Snapshot } from './kodeks.ts'
@@ -227,6 +228,52 @@ test('resolveWorkspaceReference prefers exact paths, then tail matches, then suf
   assert.equal(resolveWorkspaceReference('Sidebar.tsx', files), 'src/components/shell/Sidebar.tsx')
   assert.equal(resolveWorkspaceReference('qa-smoke.md', files), 'docs/qa-smoke.md')
   assert.equal(resolveWorkspaceReference('missing.ts', files), null)
+})
+
+test('resolveWorkspacePathReference returns typed file and folder results', () => {
+  const files = [
+    'src/App.tsx',
+    'src/components/shell/Sidebar.tsx',
+    'docs/qa-smoke.md',
+  ]
+
+  assert.deepEqual(resolveWorkspacePathReference('src/App.tsx', files), {
+    path: 'src/App.tsx',
+    kind: 'file',
+  })
+  assert.deepEqual(resolveWorkspacePathReference('src/components', files), {
+    path: 'src/components',
+    kind: 'folder',
+  })
+  assert.deepEqual(resolveWorkspacePathReference('components/shell', files), {
+    path: 'src/components/shell',
+    kind: 'folder',
+  })
+})
+
+test('resolveWorkspacePathReference supports unique case-insensitive matches', () => {
+  const files = [
+    'src/App.tsx',
+    'src/components/shell/Sidebar.tsx',
+  ]
+
+  assert.deepEqual(resolveWorkspacePathReference('app.tsx', files), {
+    path: 'src/App.tsx',
+    kind: 'file',
+  })
+  assert.deepEqual(resolveWorkspacePathReference('SRC/COMPONENTS', files), {
+    path: 'src/components',
+    kind: 'folder',
+  })
+})
+
+test('resolveWorkspacePathReference returns null when folder tails are ambiguous', () => {
+  const files = [
+    'src/components/alpha/index.ts',
+    'docs/components/beta.md',
+  ]
+
+  assert.equal(resolveWorkspacePathReference('components', files), null)
 })
 
 test('extractReferenceQuery only returns the trailing reference token', () => {
