@@ -34,6 +34,7 @@ function makeStore(): WorkspaceStore {
       },
     ],
     threadPreferences: {},
+    browserProjectPreferences: {},
     ui: {
       sidebarCollapsed: false,
       sidebarWidth: 304,
@@ -171,6 +172,7 @@ test('buildSidebarGroups merges saved project roots with thread roots when only 
         },
       ],
       threadPreferences: {},
+      browserProjectPreferences: {},
       ui: {
         sidebarCollapsed: false,
         sidebarWidth: 304,

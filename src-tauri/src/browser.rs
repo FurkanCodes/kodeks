@@ -473,6 +473,190 @@ const INSPECT_INIT_SCRIPT: &str = r#"
 })();
 "#;
 
+const TOUCH_EMULATION_BOOTSTRAP_SCRIPT: &str = r#"
+(function () {
+  if (window.__KODEKS_TOUCH_EMULATION_BOOTSTRAPPED__) {
+    return;
+  }
+
+  window.__KODEKS_TOUCH_EMULATION_BOOTSTRAPPED__ = true;
+
+  var state = {
+    enabled: false,
+    listenersInstalled: false
+  };
+
+  function installMaxTouchPointsOverride() {
+    try {
+      Object.defineProperty(navigator, 'maxTouchPoints', {
+        configurable: true,
+        get: function () {
+          return state.enabled ? 5 : 0;
+        }
+      });
+    } catch (_) {
+    }
+  }
+
+  function createTouch(target, source) {
+    if (typeof Touch !== 'function') {
+      return null;
+    }
+
+    try {
+      return new Touch({
+        identifier: Date.now(),
+        target: target,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        pageX: source.pageX,
+        pageY: source.pageY,
+        radiusX: 8,
+        radiusY: 8,
+        rotationAngle: 0,
+        force: 0.65
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function createTouchEvent(type, source) {
+    if (typeof TouchEvent !== 'function' || !(source.target instanceof Element)) {
+      return null;
+    }
+
+    var touch = createTouch(source.target, source);
+    if (!touch) {
+      return null;
+    }
+
+    var activeTouches = type === 'touchend' || type === 'touchcancel' ? [] : [touch];
+    try {
+      return new TouchEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        touches: activeTouches,
+        targetTouches: activeTouches,
+        changedTouches: [touch]
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function dispatchSyntheticTouch(type, source) {
+    if (!(source.target instanceof Element)) {
+      return false;
+    }
+
+    var event = createTouchEvent(type, source);
+    if (!event) {
+      return false;
+    }
+
+    source.target.dispatchEvent(event);
+    return true;
+  }
+
+  function handlePointer(event) {
+    if (!state.enabled) {
+      return;
+    }
+
+    if (event.pointerType && event.pointerType !== 'mouse' && event.pointerType !== 'pen') {
+      return;
+    }
+
+    var mappedType = null;
+    if (event.type === 'pointerdown') {
+      mappedType = 'touchstart';
+    } else if (event.type === 'pointermove') {
+      mappedType = 'touchmove';
+    } else if (event.type === 'pointerup') {
+      mappedType = 'touchend';
+    } else if (event.type === 'pointercancel') {
+      mappedType = 'touchcancel';
+    }
+
+    if (!mappedType) {
+      return;
+    }
+
+    var dispatched = dispatchSyntheticTouch(mappedType, event);
+    if (dispatched && event.type === 'pointerdown') {
+      event.preventDefault();
+    }
+  }
+
+  function installListeners() {
+    if (state.listenersInstalled) {
+      return;
+    }
+
+    state.listenersInstalled = true;
+    document.addEventListener('pointerdown', handlePointer, true);
+    document.addEventListener('pointermove', handlePointer, true);
+    document.addEventListener('pointerup', handlePointer, true);
+    document.addEventListener('pointercancel', handlePointer, true);
+  }
+
+  function updateRootAttributes(config) {
+    var root = document.documentElement;
+    if (!(root instanceof HTMLElement)) {
+      return;
+    }
+
+    if (state.enabled) {
+      root.dataset.kodeksTouchEmulation = 'on';
+      root.classList.add('kodeks-touch-emulation');
+    } else {
+      root.dataset.kodeksTouchEmulation = 'off';
+      root.classList.remove('kodeks-touch-emulation');
+    }
+
+    if (config && typeof config.viewportPresetId === 'string' && config.viewportPresetId.trim()) {
+      root.dataset.kodeksViewportPreset = config.viewportPresetId.trim();
+    } else {
+      root.dataset.kodeksViewportPreset = 'responsive';
+    }
+
+    if (config && typeof config.orientation === 'string' && config.orientation.trim()) {
+      root.dataset.kodeksViewportOrientation = config.orientation.trim();
+    } else {
+      root.dataset.kodeksViewportOrientation = 'portrait';
+    }
+  }
+
+  installMaxTouchPointsOverride();
+  installListeners();
+
+  window.__KODEKS_SET_TOUCH_EMULATION = function (config) {
+    var normalized = config;
+    if (!normalized || typeof normalized !== 'object') {
+      normalized = { enabled: !!config };
+    }
+
+    state.enabled = !!normalized.enabled;
+    window.__KODEKS_BROWSER_TOUCH_EMULATION__ = {
+      enabled: state.enabled,
+      viewportPresetId:
+        typeof normalized.viewportPresetId === 'string' && normalized.viewportPresetId.trim()
+          ? normalized.viewportPresetId.trim()
+          : 'responsive',
+      orientation:
+        typeof normalized.orientation === 'string' && normalized.orientation.trim()
+          ? normalized.orientation.trim()
+          : 'portrait'
+    };
+    updateRootAttributes(window.__KODEKS_BROWSER_TOUCH_EMULATION__);
+  };
+})();
+"#;
+
 const CLEAR_STORAGE_SCRIPT: &str = r#"
 (() => {
   try {
@@ -575,6 +759,44 @@ pub struct BrowserViewport {
     pub height: f64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserViewportOrientation {
+    Portrait,
+    Landscape,
+}
+
+impl Default for BrowserViewportOrientation {
+    fn default() -> Self {
+        Self::Portrait
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserEmulation {
+    #[serde(default = "default_browser_viewport_preset_id")]
+    pub viewport_preset_id: String,
+    #[serde(default)]
+    pub orientation: BrowserViewportOrientation,
+    #[serde(default)]
+    pub touch_enabled: bool,
+}
+
+impl Default for BrowserEmulation {
+    fn default() -> Self {
+        Self {
+            viewport_preset_id: default_browser_viewport_preset_id(),
+            orientation: BrowserViewportOrientation::default(),
+            touch_enabled: false,
+        }
+    }
+}
+
+fn default_browser_viewport_preset_id() -> String {
+    "responsive".to_string()
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserPageEvent {
@@ -602,6 +824,7 @@ pub struct BrowserManager {
     visible: bool,
     inspect_mode: bool,
     in_page_devtools_open: bool,
+    emulation: BrowserEmulation,
 }
 
 impl BrowserManager {
@@ -614,6 +837,7 @@ impl BrowserManager {
         self.visible = true;
         self.apply_inspect_mode(app)?;
         self.apply_in_page_devtools(app)?;
+        self.apply_emulation(app)?;
         emit_page_event(app, parsed.as_str())
     }
 
@@ -623,6 +847,7 @@ impl BrowserManager {
         webview.navigate(parsed.clone())?;
         self.apply_inspect_mode(app)?;
         self.apply_in_page_devtools(app)?;
+        self.apply_emulation(app)?;
         emit_page_event(app, parsed.as_str())
     }
 
@@ -645,6 +870,7 @@ impl BrowserManager {
             webview.set_focus()?;
             self.apply_inspect_mode(app)?;
             self.apply_in_page_devtools(app)?;
+            self.apply_emulation(app)?;
         } else {
             webview.hide()?;
         }
@@ -674,6 +900,11 @@ impl BrowserManager {
         self.in_page_devtools_open = next;
         self.apply_in_page_devtools(app)?;
         Ok(next)
+    }
+
+    pub fn set_emulation(&mut self, app: &AppHandle, emulation: BrowserEmulation) -> AnyhowResult<()> {
+        self.emulation = emulation;
+        self.apply_emulation(app)
     }
 
     pub fn clear_data(
@@ -733,6 +964,27 @@ impl BrowserManager {
             webview.eval(DISABLE_IN_PAGE_DEVTOOLS_SCRIPT)?;
         }
 
+        Ok(())
+    }
+
+    fn apply_emulation(&self, app: &AppHandle) -> AnyhowResult<()> {
+        let Some(webview) = self.current_webview(app) else {
+            return Ok(());
+        };
+
+        webview.eval(TOUCH_EMULATION_BOOTSTRAP_SCRIPT)?;
+
+        let payload = serde_json::to_string(&serde_json::json!({
+            "enabled": self.emulation.touch_enabled,
+            "viewportPresetId": self.emulation.viewport_preset_id.as_str(),
+            "orientation": match self.emulation.orientation {
+                BrowserViewportOrientation::Portrait => "portrait",
+                BrowserViewportOrientation::Landscape => "landscape",
+            },
+        }))?;
+        let script =
+            format!("if (window.__KODEKS_SET_TOUCH_EMULATION) window.__KODEKS_SET_TOUCH_EMULATION({payload});");
+        webview.eval(script)?;
         Ok(())
     }
 
@@ -817,7 +1069,7 @@ fn emit_page_event(app: &AppHandle, url: &str) -> AnyhowResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::BrowserInspectEvent;
+    use super::{BrowserEmulation, BrowserInspectEvent, BrowserViewportOrientation};
     use serde_json::json;
 
     #[test]
@@ -879,5 +1131,23 @@ mod tests {
             Some("src/components/StatCard.tsx")
         );
         assert_eq!(event.timestamp, Some(123456));
+    }
+
+    #[test]
+    fn browser_emulation_deserializes_with_touch_and_orientation() {
+        let payload = json!({
+            "viewportPresetId": "iphone-14",
+            "orientation": "landscape",
+            "touchEnabled": true
+        });
+
+        let emulation: BrowserEmulation =
+            serde_json::from_value(payload).expect("emulation should deserialize");
+        assert_eq!(emulation.viewport_preset_id, "iphone-14");
+        assert!(emulation.touch_enabled);
+        assert!(matches!(
+            emulation.orientation,
+            BrowserViewportOrientation::Landscape
+        ));
     }
 }

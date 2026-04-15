@@ -10,9 +10,18 @@ export type ThreadPreference = {
   reasoningEffort?: string
 }
 
+export type BrowserViewportOrientation = 'portrait' | 'landscape'
+
+export type BrowserProjectEmulation = {
+  viewportPresetId: string
+  orientation: BrowserViewportOrientation
+  touchEnabled: boolean
+}
+
 export type WorkspaceStore = {
   projects: SavedProject[]
   threadPreferences: Record<string, ThreadPreference>
+  browserProjectPreferences: Record<string, BrowserProjectEmulation>
   ui: WorkspaceUiState
 }
 
@@ -37,11 +46,22 @@ const MIN_TERMINAL_HEIGHT = 160
 const MAX_TERMINAL_HEIGHT = 720
 const DEFAULT_TERMINAL_HEIGHT = 280
 
+const DEFAULT_BROWSER_VIEWPORT_PRESET_ID = 'responsive'
+const DEFAULT_BROWSER_VIEWPORT_ORIENTATION: BrowserViewportOrientation = 'portrait'
+const DEFAULT_BROWSER_TOUCH_ENABLED = false
+
+export const DEFAULT_BROWSER_PROJECT_EMULATION: BrowserProjectEmulation = {
+  viewportPresetId: DEFAULT_BROWSER_VIEWPORT_PRESET_ID,
+  orientation: DEFAULT_BROWSER_VIEWPORT_ORIENTATION,
+  touchEnabled: DEFAULT_BROWSER_TOUCH_ENABLED,
+}
+
 export const LEGACY_WORKSPACE_STORE_KEY = 'kodeks.workspace-store.v1'
 
 export const EMPTY_WORKSPACE_STORE: WorkspaceStore = {
   projects: [],
   threadPreferences: {},
+  browserProjectPreferences: {},
   ui: {
     sidebarCollapsed: false,
     sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
@@ -111,6 +131,31 @@ export function normalizeWorkspaceStore(value: Partial<WorkspaceStore> | null | 
               }),
           )
         : {},
+    browserProjectPreferences:
+      parsed.browserProjectPreferences && typeof parsed.browserProjectPreferences === 'object'
+        ? Object.fromEntries(
+            Array.from(
+              Object.entries(parsed.browserProjectPreferences).reduce(
+                (preferences, [rootPath, value]) => {
+                  const normalizedRootPath = normalizeProjectRoot(rootPath)
+                  if (!normalizedRootPath) {
+                    return preferences
+                  }
+
+                  const normalizedPreference = normalizeBrowserProjectEmulation(value)
+                  if (isDefaultBrowserProjectEmulation(normalizedPreference)) {
+                    preferences.delete(normalizedRootPath)
+                    return preferences
+                  }
+
+                  preferences.set(normalizedRootPath, normalizedPreference)
+                  return preferences
+                },
+                new Map<string, BrowserProjectEmulation>(),
+              ),
+            ),
+          )
+        : {},
     ui:
       parsed.ui && typeof parsed.ui === 'object'
         ? {
@@ -162,6 +207,7 @@ export function hasWorkspaceStoreData(store: WorkspaceStore) {
   return (
     store.projects.length > 0 ||
     Object.keys(store.threadPreferences).length > 0 ||
+    Object.keys(store.browserProjectPreferences).length > 0 ||
     store.ui.sidebarCollapsed !== EMPTY_WORKSPACE_STORE.ui.sidebarCollapsed ||
     store.ui.sidebarWidth !== EMPTY_WORKSPACE_STORE.ui.sidebarWidth ||
     store.ui.inspectorWidth !== EMPTY_WORKSPACE_STORE.ui.inspectorWidth ||
@@ -265,6 +311,44 @@ export function setThreadPreference(
   return next
 }
 
+export function resolveProjectBrowserEmulation(
+  store: WorkspaceStore,
+  rootPath: string | null | undefined,
+): BrowserProjectEmulation {
+  const normalizedStore = normalizeWorkspaceStore(store)
+  const normalizedRootPath = rootPath ? normalizeProjectRoot(rootPath) : ''
+  if (!normalizedRootPath) {
+    return { ...DEFAULT_BROWSER_PROJECT_EMULATION }
+  }
+
+  const preference = normalizedStore.browserProjectPreferences[normalizedRootPath]
+  if (!preference) {
+    return { ...DEFAULT_BROWSER_PROJECT_EMULATION }
+  }
+
+  return { ...preference }
+}
+
+export function setProjectBrowserEmulation(
+  store: WorkspaceStore,
+  rootPath: string,
+  emulation: BrowserProjectEmulation,
+) {
+  const normalizedRootPath = normalizeProjectRoot(rootPath)
+  if (!normalizedRootPath) {
+    return cloneStore(normalizeWorkspaceStore(store))
+  }
+
+  const next = cloneStore(normalizeWorkspaceStore(store))
+  const normalizedEmulation = normalizeBrowserProjectEmulation(emulation)
+  if (isDefaultBrowserProjectEmulation(normalizedEmulation)) {
+    delete next.browserProjectPreferences[normalizedRootPath]
+  } else {
+    next.browserProjectPreferences[normalizedRootPath] = normalizedEmulation
+  }
+  return next
+}
+
 export function setSidebarCollapsed(store: WorkspaceStore, collapsed: boolean) {
   const next = cloneStore(store)
   next.ui.sidebarCollapsed = collapsed
@@ -305,8 +389,43 @@ function cloneStore(store: WorkspaceStore): WorkspaceStore {
   return {
     projects: store.projects.map((project) => ({ ...project })),
     threadPreferences: { ...store.threadPreferences },
+    browserProjectPreferences: Object.fromEntries(
+      Object.entries(store.browserProjectPreferences || {}).map(([rootPath, preference]) => [
+        rootPath,
+        { ...preference },
+      ]),
+    ),
     ui: { ...store.ui },
   }
+}
+
+function normalizeBrowserProjectEmulation(value: unknown): BrowserProjectEmulation {
+  const parsed =
+    value && typeof value === 'object' ? (value as Partial<BrowserProjectEmulation>) : {}
+
+  const viewportPresetId =
+    typeof parsed.viewportPresetId === 'string' && parsed.viewportPresetId.trim().length > 0
+      ? parsed.viewportPresetId.trim()
+      : DEFAULT_BROWSER_VIEWPORT_PRESET_ID
+
+  const orientation: BrowserViewportOrientation =
+    parsed.orientation === 'landscape' ? 'landscape' : DEFAULT_BROWSER_VIEWPORT_ORIENTATION
+
+  const touchEnabled = Boolean(parsed.touchEnabled)
+
+  return {
+    viewportPresetId,
+    orientation,
+    touchEnabled,
+  }
+}
+
+function isDefaultBrowserProjectEmulation(value: BrowserProjectEmulation) {
+  return (
+    value.viewportPresetId === DEFAULT_BROWSER_PROJECT_EMULATION.viewportPresetId &&
+    value.orientation === DEFAULT_BROWSER_PROJECT_EMULATION.orientation &&
+    value.touchEnabled === DEFAULT_BROWSER_PROJECT_EMULATION.touchEnabled
+  )
 }
 
 function normalizeTerminalHeight(value: unknown) {

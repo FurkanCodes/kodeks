@@ -801,6 +801,17 @@ async fn set_in_app_browser_bounds(
 }
 
 #[tauri::command]
+async fn set_in_app_browser_emulation(
+    state: State<'_, DesktopState>,
+    app: tauri::AppHandle,
+    emulation: browser::BrowserEmulation,
+) -> Result<(), String> {
+    browser_state(&state)?
+        .set_emulation(&app, emulation)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn toggle_in_app_browser_devtools(
     state: State<'_, DesktopState>,
     app: tauri::AppHandle,
@@ -1136,6 +1147,7 @@ pub fn run() {
             reload_in_app_browser,
             set_in_app_browser_visible,
             set_in_app_browser_bounds,
+            set_in_app_browser_emulation,
             toggle_in_app_browser_devtools,
             clear_in_app_browser_data,
             set_in_app_browser_inspect_mode,

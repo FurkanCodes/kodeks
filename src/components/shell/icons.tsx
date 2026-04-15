@@ -23,6 +23,7 @@ import {
   FolderGit2,
   FolderPlus,
   Globe,
+  Hand,
   Crosshair,
   Eraser,
   GitBranch,
@@ -206,6 +207,10 @@ export function MonitorIcon(props: IconProps) {
 
 export function GlobeIcon(props: IconProps) {
   return renderIcon(Globe, props, 1.25)
+}
+
+export function HandIcon(props: IconProps) {
+  return renderIcon(Hand, props, 1.25)
 }
 
 export function FolderSearchIcon(props: IconProps) {

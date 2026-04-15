@@ -17,6 +17,7 @@ const INSPECTOR_WIDTH_DEFAULT: u16 = 440;
 const TERMINAL_HEIGHT_MIN: u16 = 160;
 const TERMINAL_HEIGHT_MAX: u16 = 720;
 const TERMINAL_HEIGHT_DEFAULT: u16 = 280;
+const DEFAULT_BROWSER_VIEWPORT_PRESET_ID: &str = "responsive";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +26,8 @@ pub struct WorkspaceStorePayload {
     pub projects: Vec<SavedProjectPayload>,
     #[serde(default)]
     pub thread_preferences: BTreeMap<String, ThreadPreferencePayload>,
+    #[serde(default)]
+    pub browser_project_preferences: BTreeMap<String, BrowserProjectPreferencePayload>,
     #[serde(default)]
     pub ui: WorkspaceUiStatePayload,
 }
@@ -46,6 +49,35 @@ pub struct ThreadPreferencePayload {
     pub model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserViewportOrientation {
+    #[default]
+    Portrait,
+    Landscape,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProjectPreferencePayload {
+    #[serde(default = "default_browser_viewport_preset_id")]
+    pub viewport_preset_id: String,
+    #[serde(default)]
+    pub orientation: BrowserViewportOrientation,
+    #[serde(default)]
+    pub touch_enabled: bool,
+}
+
+impl Default for BrowserProjectPreferencePayload {
+    fn default() -> Self {
+        Self {
+            viewport_preset_id: default_browser_viewport_preset_id(),
+            orientation: BrowserViewportOrientation::default(),
+            touch_enabled: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +126,28 @@ fn default_terminal_height() -> u16 {
     TERMINAL_HEIGHT_DEFAULT
 }
 
+fn default_browser_viewport_preset_id() -> String {
+    DEFAULT_BROWSER_VIEWPORT_PRESET_ID.to_string()
+}
+
+impl BrowserProjectPreferencePayload {
+    fn normalized(mut self) -> Self {
+        let trimmed = self.viewport_preset_id.trim();
+        self.viewport_preset_id = if trimmed.is_empty() {
+            default_browser_viewport_preset_id()
+        } else {
+            trimmed.to_string()
+        };
+        self
+    }
+
+    fn is_default(&self) -> bool {
+        self.viewport_preset_id == DEFAULT_BROWSER_VIEWPORT_PRESET_ID
+            && self.orientation == BrowserViewportOrientation::default()
+            && !self.touch_enabled
+    }
+}
+
 impl WorkspaceStorePayload {
     fn normalized(mut self) -> Self {
         self.projects
@@ -102,6 +156,18 @@ impl WorkspaceStorePayload {
             !thread_id.trim().is_empty()
                 && (preference.model.is_some() || preference.reasoning_effort.is_some())
         });
+        self.browser_project_preferences = self
+            .browser_project_preferences
+            .into_iter()
+            .filter_map(|(root_path, preference)| {
+                let normalized_root_path = normalize_root_path(&root_path)?;
+                let normalized_preference = preference.normalized();
+                if normalized_preference.is_default() {
+                    return None;
+                }
+                Some((normalized_root_path, normalized_preference))
+            })
+            .collect();
         self.ui.sidebar_width = self
             .ui
             .sidebar_width
@@ -157,6 +223,20 @@ pub fn save_workspace_store(base_dir: &Path, store: &WorkspaceStorePayload) -> R
     Ok(())
 }
 
+fn normalize_root_path(value: &str) -> Option<String> {
+    let normalized = value.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let without_trailing = normalized.trim_end_matches('/');
+    if without_trailing.is_empty() {
+        Some(normalized)
+    } else {
+        Some(without_trailing.to_string())
+    }
+}
+
 fn workspace_store_path(base_dir: &Path) -> PathBuf {
     base_dir.join(WORKSPACE_STORE_FILE)
 }
@@ -196,7 +276,8 @@ fn replace_file(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_workspace_store, save_workspace_store, SavedProjectPayload, ThreadPreferencePayload,
+        load_workspace_store, save_workspace_store, BrowserProjectPreferencePayload,
+        BrowserViewportOrientation, SavedProjectPayload, ThreadPreferencePayload,
         WorkspaceStorePayload, WorkspaceUiStatePayload, INSPECTOR_WIDTH_MAX, SIDEBAR_WIDTH_MIN,
         TERMINAL_HEIGHT_MIN,
     };
@@ -229,6 +310,14 @@ mod tests {
                 ThreadPreferencePayload {
                     model: Some("gpt-5.4".to_string()),
                     reasoning_effort: Some("high".to_string()),
+                },
+            )]),
+            browser_project_preferences: BTreeMap::from([(
+                "/work/kodeks".to_string(),
+                BrowserProjectPreferencePayload {
+                    viewport_preset_id: "iphone-14".to_string(),
+                    orientation: BrowserViewportOrientation::Portrait,
+                    touch_enabled: true,
                 },
             )]),
             ui: WorkspaceUiStatePayload {
@@ -266,6 +355,35 @@ mod tests {
         assert_eq!(normalized.ui.terminal_height, TERMINAL_HEIGHT_MIN);
         assert_eq!(normalized.ui.sidebar_width, SIDEBAR_WIDTH_MIN);
         assert_eq!(normalized.ui.inspector_width, INSPECTOR_WIDTH_MAX);
+    }
+
+    #[test]
+    fn workspace_store_drops_default_browser_preferences() {
+        let store = WorkspaceStorePayload {
+            browser_project_preferences: BTreeMap::from([
+                (
+                    "/work/default".to_string(),
+                    BrowserProjectPreferencePayload::default(),
+                ),
+                (
+                    "/work/mobile".to_string(),
+                    BrowserProjectPreferencePayload {
+                        viewport_preset_id: "iphone-14".to_string(),
+                        orientation: BrowserViewportOrientation::Portrait,
+                        touch_enabled: true,
+                    },
+                ),
+            ]),
+            ..WorkspaceStorePayload::default()
+        };
+
+        let normalized = store.normalized();
+        assert_eq!(normalized.browser_project_preferences.len(), 1);
+        assert!(
+            normalized
+                .browser_project_preferences
+                .contains_key("/work/mobile")
+        );
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

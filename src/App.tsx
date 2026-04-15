@@ -59,6 +59,7 @@ import {
   openExternalUrl,
   openWorkspaceFile,
   type InAppBrowserBounds,
+  type InAppBrowserEmulation,
   type InAppBrowserClearTarget,
   type InAppBrowserInspectEvent,
   type OpenWithTarget,
@@ -77,6 +78,7 @@ import {
   saveWorkspaceStore as saveNativeWorkspaceStore,
   restartRuntime,
   setInAppBrowserBounds,
+  setInAppBrowserEmulation,
   setInAppBrowserInspectMode,
   setInAppBrowserVisible,
   type ReasoningEffortOption,
@@ -93,15 +95,19 @@ import {
   unarchiveThread,
 } from './lib/kodeks'
 import {
+  DEFAULT_BROWSER_PROJECT_EMULATION,
   EMPTY_WORKSPACE_STORE,
+  type BrowserProjectEmulation,
   clearLegacyWorkspaceStore,
   defaultProjectLabel,
   loadLegacyWorkspaceStore,
   normalizeWorkspaceStore,
+  resolveProjectBrowserEmulation,
   resolvePersistedWorkspaceStore,
   removeProjectGrouping,
   renameProject,
   setComposerRateLimitsVisible,
+  setProjectBrowserEmulation,
   setSidebarCollapsed,
   setSidebarWidth,
   setInspectorWidth,
@@ -398,6 +404,17 @@ function browserBoundsEqual(
   )
 }
 
+function browserEmulationEqual(
+  left: InAppBrowserEmulation,
+  right: InAppBrowserEmulation,
+): boolean {
+  return (
+    left.viewportPresetId === right.viewportPresetId
+    && left.orientation === right.orientation
+    && left.touchEnabled === right.touchEnabled
+  )
+}
+
 function ThreadViewTransition(props: {
   viewKey: string
   children: ReactNode
@@ -475,6 +492,9 @@ function App() {
   const [browserInspectEnabled, setBrowserInspectEnabled] = useState(false)
   const [browserInspectResult, setBrowserInspectResult] = useState<InAppBrowserInspectEvent | null>(null)
   const [browserViewportBounds, setBrowserViewportBounds] = useState<InAppBrowserBounds | null>(null)
+  const [browserEmulation, setBrowserEmulation] = useState<BrowserProjectEmulation>(
+    DEFAULT_BROWSER_PROJECT_EMULATION,
+  )
   const [browserInspectChatNotes, setBrowserInspectChatNotes] = useState<ChatMessage[]>([])
   const [composerPendingInsert, setComposerPendingInsert] = useState<{ id: string; text: string } | null>(
     null,
@@ -501,6 +521,7 @@ function App() {
   const [dragInspectorWidth, setDragInspectorWidth] = useState<number | null>(null)
   const browserDevtoolsOpenRef = useRef(browserDevtoolsOpen)
   const browserViewportBoundsRef = useRef<InAppBrowserBounds | null>(browserViewportBounds)
+  const browserEmulationRef = useRef<BrowserProjectEmulation>(browserEmulation)
   const browserViewportDebugSeqRef = useRef(0)
 
   const debugBrowserViewport = useCallback((event: string, payload?: unknown) => {
@@ -515,6 +536,20 @@ function App() {
     console.debug(`[browser-viewport][app][${browserViewportDebugSeqRef.current}] ${event}`, payload)
   }, [])
 
+  const applyBrowserEmulation = useCallback(
+    async (emulation: BrowserProjectEmulation, reason: string) => {
+      const payload: InAppBrowserEmulation = {
+        viewportPresetId: emulation.viewportPresetId,
+        orientation: emulation.orientation,
+        touchEnabled: emulation.touchEnabled,
+      }
+      debugBrowserViewport('emulation:invoke-native', { reason, payload })
+      await setInAppBrowserEmulation(payload)
+      debugBrowserViewport('emulation:invoke-native:ok', { reason })
+    },
+    [debugBrowserViewport],
+  )
+
   useEffect(() => {
     browserDevtoolsOpenRef.current = browserDevtoolsOpen
   }, [browserDevtoolsOpen])
@@ -522,6 +557,10 @@ function App() {
   useEffect(() => {
     browserViewportBoundsRef.current = browserViewportBounds
   }, [browserViewportBounds])
+
+  useEffect(() => {
+    browserEmulationRef.current = browserEmulation
+  }, [browserEmulation])
 
   useEffect(() => {
     composerAttachmentsRef.current = composerAttachments
@@ -546,6 +585,12 @@ function App() {
           return
         }
         setBrowserCurrentUrl(payload.url)
+        const activeEmulation = browserEmulationRef.current
+        void applyBrowserEmulation(activeEmulation, 'page-event').catch((nextError) => {
+          if (!disposed) {
+            setBrowserStatus(stringifyError(nextError))
+          }
+        })
         if (browserDevtoolsOpenRef.current) {
           void toggleInAppBrowserDevtools(true).catch((nextError) => {
             if (!disposed) {
@@ -614,7 +659,7 @@ function App() {
       unlistenPage?.()
       unlistenInspect?.()
     }
-  }, [])
+  }, [applyBrowserEmulation])
 
   useEffect(() => {
     if (!browserWorkspaceOpen || (browserWorkspacePane === 'chat' && !browserWorkspaceSplit)) {
@@ -624,10 +669,23 @@ function App() {
       return
     }
 
-    void setInAppBrowserVisible(true).catch((nextError) => {
-      setBrowserStatus(stringifyError(nextError))
-    })
-  }, [browserWorkspaceOpen, browserWorkspacePane, browserWorkspaceSplit, debugBrowserViewport])
+    void setInAppBrowserVisible(true)
+      .then(async () => {
+        const nextBounds = browserViewportBoundsRef.current
+        if (nextBounds) {
+          await setInAppBrowserBounds(nextBounds)
+        }
+        await applyBrowserEmulation(browserEmulationRef.current, 'workspace-visibility')
+      })
+      .catch((nextError) => {
+        setBrowserStatus(stringifyError(nextError))
+      })
+  }, [
+    applyBrowserEmulation,
+    browserWorkspaceOpen,
+    browserWorkspacePane,
+    browserWorkspaceSplit,
+  ])
 
   useEffect(() => {
     setBrowserInspectChatNotes([])
@@ -655,6 +713,28 @@ function App() {
         mostRecentProjectRoot(workspaceStore) ||
         '.',
     )
+
+  useEffect(() => {
+    const next = resolveProjectBrowserEmulation(workspaceStore, currentProjectRoot)
+    setBrowserEmulation((current) => (browserEmulationEqual(current, next) ? current : next))
+  }, [currentProjectRoot, workspaceStore])
+
+  useEffect(() => {
+    if (!browserWorkspaceOpen || (!browserWorkspaceSplit && browserWorkspacePane !== 'browser')) {
+      return
+    }
+
+    void applyBrowserEmulation(browserEmulation, 'state-sync').catch((nextError) => {
+      setBrowserStatus(stringifyError(nextError))
+    })
+  }, [
+    applyBrowserEmulation,
+    browserEmulation,
+    browserWorkspaceOpen,
+    browserWorkspacePane,
+    browserWorkspaceSplit,
+  ])
+
   const gitProjectRoot = useMemo(() => {
     const explicitRoot =
       activeProjectViewRoot ||
@@ -2569,9 +2649,11 @@ function App() {
 
     try {
       await openInAppBrowser(normalized)
-      if (browserViewportBounds) {
-        await setInAppBrowserBounds(browserViewportBounds)
+      const nextBounds = browserViewportBoundsRef.current
+      if (nextBounds) {
+        await setInAppBrowserBounds(nextBounds)
       }
+      await applyBrowserEmulation(browserEmulationRef.current, 'open-browser')
     } catch (nextError) {
       setBrowserStatus(stringifyError(nextError))
     }
@@ -2670,6 +2752,51 @@ function App() {
     }
   }, [browserWorkspaceOpen, browserWorkspacePane, browserWorkspaceSplit, debugBrowserViewport])
 
+  const handleBrowserEmulationChange = useCallback(
+    async (nextEmulation: BrowserProjectEmulation) => {
+      const normalizedNext: BrowserProjectEmulation = {
+        viewportPresetId: nextEmulation.viewportPresetId || DEFAULT_BROWSER_PROJECT_EMULATION.viewportPresetId,
+        orientation:
+          nextEmulation.orientation === 'landscape'
+            ? 'landscape'
+            : DEFAULT_BROWSER_PROJECT_EMULATION.orientation,
+        touchEnabled: Boolean(nextEmulation.touchEnabled),
+      }
+
+      if (browserEmulationEqual(browserEmulationRef.current, normalizedNext)) {
+        debugBrowserViewport('emulation:dedupe-skip', { next: normalizedNext })
+        return
+      }
+
+      const previous = browserEmulationRef.current
+      browserEmulationRef.current = normalizedNext
+      setBrowserEmulation(normalizedNext)
+      debugBrowserViewport('emulation:state:update', { previous, next: normalizedNext })
+      setWorkspaceStore((current) =>
+        setProjectBrowserEmulation(current, currentProjectRoot, normalizedNext),
+      )
+
+      if (!browserWorkspaceOpen || (!browserWorkspaceSplit && browserWorkspacePane !== 'browser')) {
+        debugBrowserViewport('emulation:forward:skip-not-browser-pane')
+        return
+      }
+
+      try {
+        await applyBrowserEmulation(normalizedNext, 'workspace-control')
+      } catch (nextError) {
+        setBrowserStatus(stringifyError(nextError))
+      }
+    },
+    [
+      applyBrowserEmulation,
+      browserWorkspaceOpen,
+      browserWorkspacePane,
+      browserWorkspaceSplit,
+      currentProjectRoot,
+      debugBrowserViewport,
+    ],
+  )
+
   function handleSwitchBrowserWorkspacePane(nextPane: BrowserWorkspacePane) {
     if (nextPane === browserWorkspacePane) {
       return
@@ -2686,9 +2813,11 @@ function App() {
 
     void setInAppBrowserVisible(true)
       .then(async () => {
-        if (browserViewportBounds) {
-          await setInAppBrowserBounds(browserViewportBounds)
+        const nextBounds = browserViewportBoundsRef.current
+        if (nextBounds) {
+          await setInAppBrowserBounds(nextBounds)
         }
+        await applyBrowserEmulation(browserEmulationRef.current, 'switch-pane')
       })
       .catch((nextError) => {
         setBrowserStatus(stringifyError(nextError))
@@ -3143,6 +3272,7 @@ function App() {
                             devtoolsOpen={browserDevtoolsOpen}
                             inspectEnabled={browserInspectEnabled}
                             inspectResult={browserInspectResult}
+                            emulation={browserEmulation}
                             status={browserStatus}
                             onNavigate={(url) => void handleNavigateBrowserUrl(url)}
                             onRefresh={() => void handleRefreshBrowser()}
@@ -3150,6 +3280,7 @@ function App() {
                             onClearData={(target) => void handleClearBrowserData(target)}
                             onSetInspectEnabled={(enabled) => void handleSetBrowserInspect(enabled)}
                             onViewportChange={handleBrowserViewportChange}
+                            onEmulationChange={(next) => void handleBrowserEmulationChange(next)}
                           />
                         </div>
                         <div className="flex min-h-0 flex-1">{chatWorkspaceBody}</div>
@@ -3163,6 +3294,7 @@ function App() {
                           devtoolsOpen={browserDevtoolsOpen}
                           inspectEnabled={browserInspectEnabled}
                           inspectResult={browserInspectResult}
+                          emulation={browserEmulation}
                           status={browserStatus}
                           onNavigate={(url) => void handleNavigateBrowserUrl(url)}
                           onRefresh={() => void handleRefreshBrowser()}
@@ -3170,6 +3302,7 @@ function App() {
                           onClearData={(target) => void handleClearBrowserData(target)}
                           onSetInspectEnabled={(enabled) => void handleSetBrowserInspect(enabled)}
                           onViewportChange={handleBrowserViewportChange}
+                          onEmulationChange={(next) => void handleBrowserEmulationChange(next)}
                         />
                       </div>
                     ) : null}

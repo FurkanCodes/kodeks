@@ -332,6 +332,12 @@ export type InAppBrowserBounds = {
   height: number
 }
 
+export type InAppBrowserEmulation = {
+  viewportPresetId: string
+  orientation: 'portrait' | 'landscape'
+  touchEnabled: boolean
+}
+
 export type InAppBrowserPageEvent = {
   url: string
 }
@@ -559,6 +565,10 @@ export async function setInAppBrowserVisible(visible: boolean) {
 
 export async function setInAppBrowserBounds(bounds: InAppBrowserBounds) {
   return invoke<void>('set_in_app_browser_bounds', { bounds })
+}
+
+export async function setInAppBrowserEmulation(emulation: InAppBrowserEmulation) {
+  return invoke<void>('set_in_app_browser_emulation', { emulation })
 }
 
 export async function toggleInAppBrowserDevtools(forceOpen?: boolean) {

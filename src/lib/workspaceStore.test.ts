@@ -2,6 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  DEFAULT_BROWSER_PROJECT_EMULATION,
   EMPTY_WORKSPACE_STORE,
   LEGACY_WORKSPACE_STORE_KEY,
   clearLegacyWorkspaceStore,
@@ -10,9 +11,11 @@ import {
   normalizeWorkspaceStore,
   removeProjectGrouping,
   renameProject,
+  resolveProjectBrowserEmulation,
   resolvePersistedWorkspaceStore,
   setComposerRateLimitsVisible,
   setInspectorWidth,
+  setProjectBrowserEmulation,
   setSidebarWidth,
   setTerminalHeight,
   setTerminalOpen,
@@ -31,6 +34,7 @@ function makeStore(): WorkspaceStore {
       },
     ],
     threadPreferences: {},
+    browserProjectPreferences: {},
     ui: {
       sidebarCollapsed: false,
       sidebarWidth: 304,
@@ -108,6 +112,7 @@ test('resolvePersistedWorkspaceStore prefers native data when it exists', () => 
       },
     ],
     threadPreferences: {},
+    browserProjectPreferences: {},
     ui: {
       sidebarCollapsed: false,
       sidebarWidth: 304,
@@ -127,6 +132,7 @@ test('resolvePersistedWorkspaceStore prefers native data when it exists', () => 
       },
     ],
     threadPreferences: {},
+    browserProjectPreferences: {},
     ui: {
       sidebarCollapsed: true,
       sidebarWidth: 320,
@@ -158,6 +164,7 @@ test('resolvePersistedWorkspaceStore migrates legacy data when native store is e
         model: 'gpt-5.4',
       },
     },
+    browserProjectPreferences: {},
     ui: {
       sidebarCollapsed: true,
       sidebarWidth: 320,
@@ -238,6 +245,13 @@ test('legacy localStorage payload loads into the normalized workspace store shap
           reasoningEffort: 'high',
         },
       },
+      browserProjectPreferences: {
+        '/work/alpha': {
+          viewportPresetId: 'iphone-14',
+          orientation: 'portrait',
+          touchEnabled: true,
+        },
+      },
       ui: {
         sidebarCollapsed: true,
         sidebarWidth: 320,
@@ -265,6 +279,13 @@ test('legacy localStorage payload loads into the normalized workspace store shap
           reasoningEffort: 'high',
         },
       },
+      browserProjectPreferences: {
+        '/work/alpha': {
+          viewportPresetId: 'iphone-14',
+          orientation: 'portrait',
+          touchEnabled: true,
+        },
+      },
       ui: {
         sidebarCollapsed: true,
         sidebarWidth: 320,
@@ -284,4 +305,26 @@ test('legacy localStorage payload loads into the normalized workspace store shap
       ;(globalThis as { window?: unknown }).window = previousWindow
     }
   }
+})
+
+test('setProjectBrowserEmulation stores per-project overrides and drops defaults', () => {
+  const custom = setProjectBrowserEmulation(makeStore(), '/Users/furkan/kodeks', {
+    viewportPresetId: 'iphone-14',
+    orientation: 'portrait',
+    touchEnabled: true,
+  })
+
+  assert.deepEqual(custom.browserProjectPreferences['/Users/furkan/kodeks'], {
+    viewportPresetId: 'iphone-14',
+    orientation: 'portrait',
+    touchEnabled: true,
+  })
+
+  const reset = setProjectBrowserEmulation(custom, '/Users/furkan/kodeks', DEFAULT_BROWSER_PROJECT_EMULATION)
+  assert.equal(reset.browserProjectPreferences['/Users/furkan/kodeks'], undefined)
+})
+
+test('resolveProjectBrowserEmulation falls back to defaults for unknown roots', () => {
+  const resolved = resolveProjectBrowserEmulation(makeStore(), '/tmp/unknown')
+  assert.deepEqual(resolved, DEFAULT_BROWSER_PROJECT_EMULATION)
 })
