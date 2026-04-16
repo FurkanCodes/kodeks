@@ -499,6 +499,10 @@ function App() {
   const [composerPendingInsert, setComposerPendingInsert] = useState<{ id: string; text: string } | null>(
     null,
   )
+  const [pendingThreadBootstrap, setPendingThreadBootstrap] = useState<{
+    id: string
+    prompt: string
+  } | null>(null)
   const [panelMode, setPanelMode] = useState<PanelMode>(null)
   const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null)
   const [selectedCodePath, setSelectedCodePath] = useState<string | null>(null)
@@ -508,6 +512,12 @@ function App() {
   const [showHiddenDiffFiles, setShowHiddenDiffFiles] = useState(false)
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null)
   const [dismissedApprovals, setDismissedApprovals] = useState(false)
+  const [approvalActionRequestId, setApprovalActionRequestId] = useState<string | null>(null)
+  const [approvalNotice, setApprovalNotice] = useState<{
+    tone: 'info' | 'success' | 'error'
+    title: string
+    detail?: string | null
+  } | null>(null)
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
   const [undoArchive, setUndoArchive] = useState<SidebarThread | null>(null)
   const [viewportWidth, setViewportWidth] = useState(() =>
@@ -864,6 +874,38 @@ function App() {
         : snapshot.approvals.filter((approval) => approval.status === 'pending'),
     [activeCatalogTab, activeProjectViewRoot, browserWorkspaceOpen, snapshot.approvals],
   )
+  const pendingApprovalSummary = useMemo(() => {
+    const counts = {
+      command: 0,
+      fileChange: 0,
+      permission: 0,
+      other: 0,
+    }
+
+    for (const approval of pendingApprovals) {
+      if (approval.kind === 'command') {
+        counts.command += 1
+      } else if (approval.kind === 'file-change' || approval.kind === 'patch') {
+        counts.fileChange += 1
+      } else if (approval.kind === 'permission') {
+        counts.permission += 1
+      } else {
+        counts.other += 1
+      }
+    }
+
+    const tags = [
+      counts.command > 0 ? `${counts.command} command` : null,
+      counts.fileChange > 0 ? `${counts.fileChange} file change` : null,
+      counts.permission > 0 ? `${counts.permission} permission` : null,
+      counts.other > 0 ? `${counts.other} other` : null,
+    ].filter((value): value is string => Boolean(value))
+
+    return {
+      ...counts,
+      tags,
+    }
+  }, [pendingApprovals])
 
   const threadParsedDiffFiles = useMemo(
     () => prepareDiffFiles(parseUnifiedDiff(snapshot.active_diff?.diff)),
@@ -991,14 +1033,31 @@ function App() {
     [],
   )
 
-  const liveStatus = useMemo(
-    () => (activeProjectViewRoot ? null : buildLiveStatus(snapshot)),
-    [activeProjectViewRoot, snapshot],
-  )
+  const liveStatus = useMemo(() => {
+    if (pendingThreadBootstrap) {
+      return {
+        label: 'Thinking…',
+        detailLines: ['Starting a fresh thread for this request.'],
+      }
+    }
+    return activeProjectViewRoot ? null : buildLiveStatus(snapshot)
+  }, [activeProjectViewRoot, pendingThreadBootstrap, snapshot])
 
   const shellMessagesValue = useMemo(
     () => {
       if (activeProjectViewRoot) {
+        if (pendingThreadBootstrap) {
+          return [
+            {
+              id: pendingThreadBootstrap.id,
+              author: 'You' as const,
+              timestamp: formatClockTime(Date.now()),
+              tone: 'user' as const,
+              text: pendingThreadBootstrap.prompt || 'Sent a new message.',
+              presentation: 'chat' as const,
+            },
+          ]
+        }
         return []
       }
       const baseMessages = shellMessages(snapshot, error, activeThread?.updated_at)
@@ -1007,7 +1066,14 @@ function App() {
       }
       return [...baseMessages, ...browserInspectChatNotes]
     },
-    [activeProjectViewRoot, activeThread?.updated_at, browserInspectChatNotes, error, snapshot],
+    [
+      activeProjectViewRoot,
+      activeThread?.updated_at,
+      browserInspectChatNotes,
+      error,
+      pendingThreadBootstrap,
+      snapshot,
+    ],
   )
 
   const sidebarAccounts = useMemo<SidebarAccount[]>(
@@ -1298,6 +1364,28 @@ function App() {
   }, [pendingApprovals.length])
 
   useEffect(() => {
+    if (!approvalActionRequestId) {
+      return
+    }
+    if (pendingApprovals.some((approval) => approval.request_id === approvalActionRequestId)) {
+      return
+    }
+    setApprovalActionRequestId(null)
+  }, [approvalActionRequestId, pendingApprovals])
+
+  useEffect(() => {
+    if (!approvalNotice || approvalNotice.tone === 'error') {
+      return
+    }
+    const timeout = window.setTimeout(() => {
+      setApprovalNotice((current) => (current?.tone === 'error' ? current : null))
+    }, 4800)
+    return () => {
+      window.clearTimeout(timeout)
+    }
+  }, [approvalNotice])
+
+  useEffect(() => {
     if (!terminalAvailable && workspaceStore.ui.terminalOpen) {
       setWorkspaceStore((current) => setTerminalOpen(current, false))
     }
@@ -1318,6 +1406,12 @@ function App() {
       setFocusedMessageId(null)
     }
   }, [activeTurnId])
+
+  useEffect(() => {
+    if (!activeProjectViewRoot && pendingThreadBootstrap) {
+      setPendingThreadBootstrap(null)
+    }
+  }, [activeProjectViewRoot, pendingThreadBootstrap])
 
   useEffect(() => {
     if (!workspaceStoreHydrated || !activeThread) {
@@ -1920,6 +2014,7 @@ function App() {
     try {
       let nextSnapshot: Snapshot
       let preferenceThreadId: string | null = null
+      let startedFromProject = false
 
       if (!activeProjectViewRoot && snapshot.active_thread_id && activeTurnId) {
         nextSnapshot = await steerTurn(
@@ -1934,13 +2029,21 @@ function App() {
         nextSnapshot = await sendPrompt(snapshot.active_thread_id, trimmedPrompt, attachments, config)
         preferenceThreadId = snapshot.active_thread_id
       } else {
+        startedFromProject = true
+        setPendingThreadBootstrap({
+          id: `pending-thread-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          prompt: trimmedPrompt || (attachments.length > 0 ? 'Shared attachment(s).' : 'Sent a message.'),
+        })
         nextSnapshot = await startThread(normalizedRoot, trimmedPrompt, attachments, config)
         preferenceThreadId = nextSnapshot.active_thread_id || null
-        setActiveProjectViewRoot(null)
-        setWorkspaceStore((current) => upsertProject(current, normalizedRoot))
       }
 
       setSnapshot(nextSnapshot)
+      if (startedFromProject) {
+        setActiveProjectViewRoot(null)
+        setWorkspaceStore((current) => upsertProject(current, normalizedRoot))
+      }
+      setPendingThreadBootstrap(null)
 
       if (preferenceThreadId) {
         recordShellNavigation({ kind: 'thread', threadId: preferenceThreadId })
@@ -1952,6 +2055,7 @@ function App() {
       setComposerResetToken((current) => current + 1)
       clearComposerAttachments()
     } catch (nextError) {
+      setPendingThreadBootstrap(null)
       setError(stringifyError(nextError))
     } finally {
       setBusy(false)
@@ -2443,13 +2547,33 @@ function App() {
   }
 
   async function handleApproval(approval: ApprovalEntry, decision: string) {
+    const decisionLabel =
+      approval.available_decisions.find((option) => option.id === decision)?.label || decision
+    setApprovalActionRequestId(approval.request_id)
+    setApprovalNotice({
+      tone: 'info',
+      title: `Submitting: ${decisionLabel}`,
+      detail: 'Sending your decision to the runtime...',
+    })
     setBusy(true)
     setError(null)
     try {
       setSnapshot(await resolveApproval(approval.request_id, decision))
+      setApprovalNotice({
+        tone: 'success',
+        title: 'Decision applied',
+        detail: `${decisionLabel} has been sent for "${approval.title}".`,
+      })
     } catch (nextError) {
-      setError(stringifyError(nextError))
+      const message = stringifyError(nextError)
+      setError(message)
+      setApprovalNotice({
+        tone: 'error',
+        title: 'Approval action failed',
+        detail: message,
+      })
     } finally {
+      setApprovalActionRequestId(null)
       setBusy(false)
     }
   }
@@ -2535,6 +2659,18 @@ function App() {
       void setInAppBrowserVisible(false).catch(() => {})
     }
     setPanelMode((current) => (current === 'diagnostics' ? null : 'diagnostics'))
+  }
+
+  function handleToggleApprovals() {
+    if (browserWorkspaceOpen) {
+      setBrowserWorkspaceOpen(false)
+      void setInAppBrowserVisible(false).catch(() => {})
+    }
+    if (pendingApprovals.length === 0) {
+      return
+    }
+    setDismissedApprovals(false)
+    setPanelMode((current) => (current === 'approvals' ? null : 'approvals'))
   }
 
   function handleToggleTerminal() {
@@ -2957,6 +3093,9 @@ function App() {
             browserOpen={false}
             terminalReady={false}
             terminalOpen={false}
+            approvalsCount={0}
+            approvalsOpen={false}
+            approvalsDisabled
             diagnosticsCount={0}
             diagnosticsOpen={false}
             onToggleSidebar={() => {}}
@@ -2966,6 +3105,7 @@ function App() {
             onToggleCode={() => {}}
             onToggleBrowser={() => {}}
             onToggleTerminal={() => {}}
+            onToggleApprovals={() => {}}
             onToggleDiagnostics={() => {}}
           />
 
@@ -3009,23 +3149,72 @@ function App() {
           <div className="mx-auto flex min-h-full w-full max-w-[74rem] flex-col px-4">
             <div className="shrink-0">
               {pendingApprovals.length > 0 && effectivePanelMode !== 'approvals' ? (
-                <section className="mt-3.5 flex items-center justify-between rounded-[14px] border border-amber-400/10 bg-amber-500/5 px-4 py-3.5">
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-200/70">
-                      Approvals
+                <section className="mt-3.5 rounded-[14px] border border-amber-400/16 bg-[linear-gradient(150deg,rgba(251,191,36,0.14),rgba(251,191,36,0.05)_45%,rgba(9,9,11,0.22))] px-4 py-3.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-100/80">
+                        Permissions
+                      </div>
+                      <div className="mt-1 text-[13.5px] tracking-[-0.012em] text-neutral-100">
+                        {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'request' : 'requests'} need your decision.
+                      </div>
+                      <div className="mt-0.5 text-[12px] leading-5 text-neutral-300/80">
+                        Runtime execution is paused until these approvals are resolved.
+                      </div>
                     </div>
-                    <div className="mt-1 text-[13px] tracking-[-0.012em] text-neutral-200">
-                      {pendingApprovals.length} pending {pendingApprovals.length === 1 ? 'approval' : 'approvals'} need review.
+                    <div className="flex items-center gap-2">
+                      <NoticeButton
+                        bright
+                        onClick={() => {
+                          setDismissedApprovals(false)
+                          setPanelMode('approvals')
+                        }}
+                      >
+                        Review now
+                      </NoticeButton>
+                      <NoticeButton onClick={() => setDismissedApprovals(true)}>
+                        Later
+                      </NoticeButton>
                     </div>
                   </div>
-                  <NoticeButton
-                    onClick={() => {
-                      setDismissedApprovals(false)
-                      setPanelMode('approvals')
-                    }}
+                  {pendingApprovalSummary.tags.length > 0 ? (
+                    <div className="mt-2.5 flex flex-wrap gap-1.5">
+                      {pendingApprovalSummary.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded-full border border-amber-100/15 bg-black/25 px-2 py-0.5 text-[10px] uppercase tracking-[0.06em] text-amber-100/75"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
+              {approvalNotice ? (
+                <section
+                  className={`mt-3.5 flex items-start justify-between gap-3 rounded-[14px] border px-4 py-3.5 ${
+                    approvalNotice.tone === 'error'
+                      ? 'border-red-400/18 bg-red-500/[0.08]'
+                      : approvalNotice.tone === 'success'
+                        ? 'border-emerald-400/18 bg-emerald-500/[0.08]'
+                        : 'border-sky-400/16 bg-sky-500/[0.08]'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-semibold tracking-[-0.01em] text-neutral-100">{approvalNotice.title}</div>
+                    {approvalNotice.detail ? (
+                      <div className="mt-0.5 text-[12px] leading-5 text-neutral-300/85">{approvalNotice.detail}</div>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded-[6px] border border-white/10 px-2 py-1 text-[10.5px] uppercase tracking-[0.06em] text-neutral-300 transition hover:border-white/20 hover:text-neutral-100"
+                    onClick={() => setApprovalNotice(null)}
                   >
-                    Review approvals
-                  </NoticeButton>
+                    Dismiss
+                  </button>
                 </section>
               ) : null}
 
@@ -3130,6 +3319,9 @@ function App() {
           browserOpen={browserWorkspaceOpen}
           terminalReady={terminalAvailable}
           terminalOpen={!agenticViewActive && terminalOpen}
+          approvalsCount={pendingApprovals.length}
+          approvalsOpen={effectivePanelMode === 'approvals'}
+          approvalsDisabled={pendingApprovals.length === 0}
           diagnosticsCount={diagnosticsCount}
           diagnosticsOpen={effectivePanelMode === 'diagnostics'}
           commitReady={Boolean(projectGit && (composerGitSummary.fileCount > 0 || gitCanPush))}
@@ -3141,6 +3333,7 @@ function App() {
           onToggleCode={handleToggleCode}
           onToggleBrowser={handleToggleBrowser}
           onToggleTerminal={handleToggleTerminal}
+          onToggleApprovals={handleToggleApprovals}
           onToggleDiagnostics={handleToggleDiagnostics}
         />
 
@@ -3373,6 +3566,7 @@ function App() {
                 codeChangedLines={codeChangedLines}
                 codeLanguage={languageForPath(selectedCodePath)}
                 approvals={pendingApprovals}
+                approvalsBusyRequestId={approvalActionRequestId}
                 warnings={diagnosticsWarnings}
                 traces={diagnosticsTraces}
                 onClose={handleClosePanel}

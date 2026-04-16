@@ -7,7 +7,9 @@ import {
   ArrowRightIcon,
   BranchIcon,
   FileCodeIcon,
+  GaugeIcon,
   PinIcon,
+  ShieldAlertIcon,
   SidebarCollapseIcon,
   SidebarExpandIcon,
   SquarePenIcon,
@@ -36,6 +38,9 @@ type TopBarProps = {
   browserOpen: boolean
   terminalReady: boolean
   terminalOpen: boolean
+  approvalsCount: number
+  approvalsOpen: boolean
+  approvalsDisabled?: boolean
   diagnosticsCount: number
   diagnosticsOpen: boolean
   commitReady?: boolean
@@ -47,6 +52,7 @@ type TopBarProps = {
   onToggleCode: () => void
   onToggleBrowser: () => void
   onToggleTerminal: () => void
+  onToggleApprovals: () => void
   onToggleDiagnostics: () => void
 }
 
@@ -332,6 +338,21 @@ export function TopBar(props: TopBarProps) {
           active={props.terminalOpen}
           disabled={!props.terminalReady}
           onClick={props.onToggleTerminal}
+        />
+        <HeaderToggle
+          icon={ShieldAlertIcon}
+          label="Approvals"
+          count={props.approvalsCount}
+          active={props.approvalsOpen}
+          disabled={props.approvalsDisabled}
+          onClick={props.onToggleApprovals}
+        />
+        <HeaderToggle
+          icon={GaugeIcon}
+          label="Diagnostics"
+          count={props.diagnosticsCount}
+          active={props.diagnosticsOpen}
+          onClick={props.onToggleDiagnostics}
         />
       </div>
     </header>

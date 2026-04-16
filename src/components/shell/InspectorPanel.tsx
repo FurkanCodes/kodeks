@@ -44,6 +44,7 @@ type InspectorPanelProps = {
   codeChangedLines?: ReadonlySet<number>
   codeLanguage?: string
   approvals: ApprovalEntry[]
+  approvalsBusyRequestId?: string | null
   warnings: DiagnosticWarning[]
   traces: DiagnosticTrace[]
   onClose: () => void
@@ -213,19 +214,32 @@ function renderJsonValue(value: unknown) {
 function renderDecisionButtons(
   approval: ApprovalEntry,
   onApprove: (approval: ApprovalEntry, decision: string) => void,
+  busy?: boolean,
 ) {
   return (
     <div className="mt-4 flex flex-wrap gap-2">
-      {approval.available_decisions.map((decision: ApprovalDecisionOption) => (
-        <button
-          type="button"
-          className="rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-medium text-neutral-300 transition hover:border-white/20 hover:text-white"
-          key={`${approval.request_id}-${decision.id}`}
-          onClick={() => onApprove(approval, decision.id)}
-        >
-          {decision.label}
-        </button>
-      ))}
+      {approval.available_decisions.map((decision: ApprovalDecisionOption) => {
+        const normalized = decision.id.toLowerCase()
+        const primary = normalized === 'accept' || normalized === 'acceptforsession' || normalized === 'approve'
+        const reject = normalized.includes('reject') || normalized.includes('deny') || normalized === 'decline'
+        return (
+          <button
+            type="button"
+            className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
+              primary
+                ? 'border-emerald-300/30 bg-emerald-300/14 text-emerald-100 hover:border-emerald-200/45 hover:bg-emerald-300/20'
+                : reject
+                  ? 'border-red-300/28 text-red-100 hover:border-red-200/45 hover:bg-red-300/14'
+                  : 'border-white/10 text-neutral-200 hover:border-white/20 hover:text-white'
+            } disabled:cursor-not-allowed disabled:opacity-55`}
+            key={`${approval.request_id}-${decision.id}`}
+            onClick={() => onApprove(approval, decision.id)}
+            disabled={busy}
+          >
+            {busy ? 'Submitting...' : decision.label}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -287,6 +301,7 @@ function OpenWithMenu(props: {
 function renderCommandApprovalCard(
   approval: ApprovalEntry,
   onApprove: (approval: ApprovalEntry, decision: string) => void,
+  busy?: boolean,
 ) {
   const actions = approval.command_actions.map(describeCommandAction).filter(Boolean) as string[]
   const networkContext = approval.network_approval_context as
@@ -342,7 +357,7 @@ function renderCommandApprovalCard(
           <ApprovalMetaRow label="permissions" value={renderJsonValue(approval.additional_permissions)} />
         ) : null}
       </div>
-      {renderDecisionButtons(approval, onApprove)}
+      {renderDecisionButtons(approval, onApprove, busy)}
     </article>
   )
 }
@@ -350,6 +365,7 @@ function renderCommandApprovalCard(
 function renderFileChangeCard(
   approval: ApprovalEntry,
   onApprove: (approval: ApprovalEntry, decision: string) => void,
+  busy?: boolean,
 ) {
   return (
     <article className="rounded-xl border border-white/5 bg-white/[0.02] p-4" key={approval.request_id}>
@@ -426,7 +442,7 @@ function renderFileChangeCard(
           Waiting for file diff details from runtime.
         </div>
       )}
-      {renderDecisionButtons(approval, onApprove)}
+      {renderDecisionButtons(approval, onApprove, busy)}
     </article>
   )
 }
@@ -434,6 +450,7 @@ function renderFileChangeCard(
 function renderPermissionApprovalCard(
   approval: ApprovalEntry,
   onApprove: (approval: ApprovalEntry, decision: string) => void,
+  busy?: boolean,
 ) {
   return (
     <article className="rounded-xl border border-white/5 bg-white/[0.02] p-4" key={approval.request_id}>
@@ -445,7 +462,7 @@ function renderPermissionApprovalCard(
       ) : (
         <div className="mt-3 text-[12.5px] text-neutral-500">No permission payload attached.</div>
       )}
-      {renderDecisionButtons(approval, onApprove)}
+      {renderDecisionButtons(approval, onApprove, busy)}
     </article>
   )
 }
@@ -453,13 +470,14 @@ function renderPermissionApprovalCard(
 function renderGenericApprovalCard(
   approval: ApprovalEntry,
   onApprove: (approval: ApprovalEntry, decision: string) => void,
+  busy?: boolean,
 ) {
   return (
     <article className="rounded-xl border border-white/5 bg-white/[0.02] p-4" key={approval.request_id}>
       <div className="mb-2 text-[11px] uppercase tracking-[0.06em] text-neutral-500">{approval.kind}</div>
       <div className="text-[14px] font-medium text-neutral-200">{approval.title}</div>
       <pre className="mt-3 whitespace-pre-wrap text-[13px] leading-6 text-neutral-400">{approval.body}</pre>
-      {renderDecisionButtons(approval, onApprove)}
+      {renderDecisionButtons(approval, onApprove, busy)}
     </article>
   )
 }
@@ -467,21 +485,50 @@ function renderGenericApprovalCard(
 function renderApprovalCard(
   approval: ApprovalEntry,
   onApprove: (approval: ApprovalEntry, decision: string) => void,
+  busy?: boolean,
 ) {
   if (approval.kind === 'command') {
-    return renderCommandApprovalCard(approval, onApprove)
+    return renderCommandApprovalCard(approval, onApprove, busy)
   }
   if (approval.kind === 'file-change' || approval.kind === 'patch') {
-    return renderFileChangeCard(approval, onApprove)
+    return renderFileChangeCard(approval, onApprove, busy)
   }
   if (
     approval.kind === 'permission' &&
     approval.permissions &&
     approval.available_decisions.every((decision) => decision.id === 'accept' || decision.id === 'acceptForSession')
   ) {
-    return renderPermissionApprovalCard(approval, onApprove)
+    return renderPermissionApprovalCard(approval, onApprove, busy)
   }
-  return renderGenericApprovalCard(approval, onApprove)
+  return renderGenericApprovalCard(approval, onApprove, busy)
+}
+
+type ApprovalGroupKey = 'command' | 'file-change' | 'permission' | 'other'
+
+function approvalGroupKeyForKind(kind: string): ApprovalGroupKey {
+  if (kind === 'command') {
+    return 'command'
+  }
+  if (kind === 'file-change' || kind === 'patch') {
+    return 'file-change'
+  }
+  if (kind === 'permission') {
+    return 'permission'
+  }
+  return 'other'
+}
+
+function approvalGroupLabel(group: ApprovalGroupKey) {
+  switch (group) {
+    case 'command':
+      return 'Command access'
+    case 'file-change':
+      return 'File changes'
+    case 'permission':
+      return 'Permission grants'
+    default:
+      return 'Other requests'
+  }
 }
 
 function CodeTokenLine(props: { text: string; lineNumber: number; changed?: boolean; language?: string }) {
@@ -1013,7 +1060,41 @@ export function InspectorPanel(props: InspectorPanelProps) {
       {props.mode === 'approvals' ? (
         <div className="shell-scroll-none flex-1 space-y-3 overflow-y-auto p-4">
           {props.approvals.length > 0 ? (
-            props.approvals.map((approval) => renderApprovalCard(approval, props.onApprove))
+            <>
+              <section className="rounded-xl border border-amber-400/16 bg-[linear-gradient(155deg,rgba(251,191,36,0.14),rgba(251,191,36,0.04)_44%,rgba(9,9,11,0.24))] p-4">
+                <div className="text-[10.5px] uppercase tracking-[0.08em] text-amber-100/80">Pending approvals</div>
+                <div className="mt-1 text-[14px] font-medium tracking-[-0.012em] text-neutral-100">
+                  {props.approvals.length} request{props.approvals.length === 1 ? '' : 's'} waiting
+                </div>
+                <div className="mt-1 text-[12.5px] leading-6 text-neutral-300/85">
+                  Review each request and choose allow/deny to continue execution.
+                </div>
+              </section>
+
+              {(['command', 'file-change', 'permission', 'other'] as ApprovalGroupKey[]).map((group) => {
+                const groupEntries = props.approvals.filter(
+                  (approval) => approvalGroupKeyForKind(approval.kind) === group,
+                )
+                if (groupEntries.length === 0) {
+                  return null
+                }
+
+                return (
+                  <section key={group} className="space-y-3">
+                    <div className="px-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-neutral-500">
+                      {approvalGroupLabel(group)} ({groupEntries.length})
+                    </div>
+                    {groupEntries.map((approval) =>
+                      renderApprovalCard(
+                        approval,
+                        props.onApprove,
+                        props.approvalsBusyRequestId === approval.request_id,
+                      ),
+                    )}
+                  </section>
+                )
+              })}
+            </>
           ) : (
             <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 text-[14px] text-neutral-500">
               No approvals are waiting right now.
